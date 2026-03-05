@@ -1,12 +1,12 @@
 // ============================================================
 // DUPLIQUER UNE ARBORESCENCE - Google Drive Add-on
-// Fabrice FAUCHEUX - DSI Cooperl
+// Fabrice FAUCHEUX
 // ============================================================
 
 const PROPS = PropertiesService.getUserProperties();
 const MAX_EXECUTION_MS = 25 * 1000;
 const VERSION = 'v1.31';
-const AUTHOR = 'Fabrice FAUCHEUX - DSI Cooperl';
+const AUTHOR = 'Fabrice FAUCHEUX';
 
 // ============================================================
 // POINT D'ENTRÉE
