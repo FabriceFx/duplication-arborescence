@@ -1,0 +1,35 @@
+{
+  "timeZone": "Europe/Paris",
+  "dependencies": {
+    "enabledAdvancedServices": [
+      {
+        "userSymbol": "Drive",
+        "serviceId": "drive",
+        "version": "v3"
+      }
+    ]
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.addons.metadata.readonly"
+  ],
+  "addOns": {
+    "common": {
+      "name": "Dupliquer une arborescence",
+      "logoUrl": "https://storage.googleapis.com/signature_email_cooperl/Modules/duplication.png",
+      "homepageTrigger": {
+        "runFunction": "onDriveItemsSelected"
+      }
+    },
+    "drive": {
+      "homepageTrigger": {
+        "runFunction": "onDriveItemsSelected"
+      },
+      "onItemsSelectedTrigger": {
+        "runFunction": "onDriveItemsSelected"
+      }
+    }
+  }
+}
