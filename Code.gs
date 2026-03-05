@@ -1,11 +1,10 @@
 // ============================================================
 // DUPLIQUER UNE ARBORESCENCE - Google Drive Add-on
-// Fabrice FAUCHEUX
 // ============================================================
 
 const PROPS = PropertiesService.getUserProperties();
 const MAX_EXECUTION_MS = 25 * 1000;
-const VERSION = 'v1.31';
+const VERSION = 'v2.1';
 const AUTHOR = 'Fabrice FAUCHEUX';
 
 // ============================================================
@@ -70,23 +69,27 @@ function onDriveItemsSelected(e) {
     .addWidget(CardService.newTextInput()
       .setFieldName('exclusions')
       .setTitle('Dossiers à ignorer')
-      .setHint('Noms séparés par des virgules (optionnel)')));
+      .setHint('Noms séparés par des virgules (optionnel)'))
+    .addWidget(CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.CHECK_BOX)
+      .setFieldName('use_regex')
+      .addItem('Utiliser des expressions régulières pour les exclusions', 'yes', false)));
 
   const actionSection = CardService.newCardSection()
     .addWidget(CardService.newTextButton()
-      .setText('🚀 Lancer la duplication')
+      .setText('Lancer la duplication')
       .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
       .setOnClickAction(CardService.newAction()
         .setFunctionName('startDuplication')
         .setParameters({ folderId: item.id, folderName: item.title })));
 
-  const jobRaw = PROPS.getProperty('current_job');
-  if (jobRaw) {
+  if (loadJobState()) {
     actionSection.addWidget(CardService.newTextButton()
       .setText('▶️ Reprendre la duplication en cours')
       .setOnClickAction(CardService.newAction()
         .setFunctionName('resumeDuplication')));
   }
+
   card.addSection(actionSection);
   card.addSection(buildHistorySection());
   card.addSection(buildFooterSection());
@@ -94,20 +97,16 @@ function onDriveItemsSelected(e) {
   return card.build();
 }
 
-// ============================================================
-// PIED DE PANNEAU
-// ============================================================
-
 function buildFooterSection() {
   return CardService.newCardSection()
     .setCollapsible(false)
-    .addWidget(CardService.newDivider())
+    //.addWidget(CardService.newDivider())
     .addWidget(CardService.newTextParagraph()
       .setText('<font color="#888888"><i>' + VERSION + ' · ' + AUTHOR + '</i></font>'));
 }
 
 // ============================================================
-// APERÇU
+// APERÇU LIMITÉ
 // ============================================================
 
 function previewFolder(e) {
@@ -116,23 +115,25 @@ function previewFolder(e) {
 
   try {
     const folder = DriveApp.getFolderById(folderId);
-    const stats = { folders: 0, files: 0, depth: 0 };
-    countFolderContents(folder, stats, 0);
-    const isLarge = stats.folders > 50 || stats.files > 200;
+    const stats = { folders: 0, files: 0, depth: 0, limitReached: false };
+    countFolderContentsLimited(folder, stats, 0);
+
+    const isLarge = stats.folders > 50 || stats.files > 200 || stats.limitReached;
+    let limitWarning = stats.limitReached ? '\n\n⚠️ Limite d\'aperçu atteinte (>1000 éléments). L\'arborescence réelle est plus grande.' : '';
 
     return CardService.newCardBuilder()
       .setHeader(CardService.newCardHeader().setTitle('Aperçu : ' + folderName))
       .addSection(CardService.newCardSection()
         .addWidget(CardService.newDecoratedText()
-          .setTopLabel('Sous-dossiers').setText('' + stats.folders))
+          .setTopLabel('Sous-dossiers').setText(stats.folders + (stats.limitReached ? '+' : '')))
         .addWidget(CardService.newDecoratedText()
-          .setTopLabel('Fichiers').setText('' + stats.files))
+          .setTopLabel('Fichiers').setText(stats.files + (stats.limitReached ? '+' : '')))
         .addWidget(CardService.newDecoratedText()
           .setTopLabel('Profondeur').setText(stats.depth + ' niveau(x)'))
         .addWidget(CardService.newTextParagraph()
-          .setText(isLarge
-            ? '⚠️ Arborescence volumineuse : la duplication se fera en plusieurs passes. Cliquez "Continuer" autant de fois que nécessaire jusqu\'à la fin.'
-            : '✅ Taille raisonnable, la duplication s\'effectuera en une seule passe.'))
+          .setText((isLarge
+            ? '⚠️ Arborescence volumineuse : la duplication se fera en plusieurs passes.'
+            : '✅ Taille raisonnable, la duplication s\'effectuera en une seule passe.') + limitWarning))
         .addWidget(CardService.newTextButton()
           .setText('← Retour')
           .setOnClickAction(CardService.newAction()
@@ -145,15 +146,71 @@ function previewFolder(e) {
   }
 }
 
-function countFolderContents(folder, stats, depth) {
+function countFolderContentsLimited(folder, stats, depth) {
+  if (stats.folders + stats.files > 1000) {
+    stats.limitReached = true;
+    return;
+  }
   if (depth > stats.depth) stats.depth = depth;
   const subFolders = folder.getFolders();
-  while (subFolders.hasNext()) {
+  while (subFolders.hasNext() && !stats.limitReached) {
     stats.folders++;
-    countFolderContents(subFolders.next(), stats, depth + 1);
+    countFolderContentsLimited(subFolders.next(), stats, depth + 1);
   }
   const files = folder.getFiles();
-  while (files.hasNext()) { files.next(); stats.files++; }
+  while (files.hasNext() && !stats.limitReached) { 
+    files.next(); 
+    stats.files++; 
+    if (stats.folders + stats.files > 1000) stats.limitReached = true;
+  }
+}
+
+// ============================================================
+// GESTION DU STOCKAGE (CHUNKING) & RETRY
+// ============================================================
+
+function saveJobState(job) {
+  clearJobState();
+  const json = JSON.stringify(job);
+  const chunkSize = 8000;
+  const chunksCount = Math.ceil(json.length / chunkSize);
+  PROPS.setProperty('job_chunks_count', chunksCount.toString());
+  for(let i = 0; i < chunksCount; i++) {
+    PROPS.setProperty('job_chunk_' + i, json.substring(i * chunkSize, (i + 1) * chunkSize));
+  }
+}
+
+function loadJobState() {
+  const countStr = PROPS.getProperty('job_chunks_count');
+  if (!countStr) return null;
+  const count = parseInt(countStr, 10);
+  let json = '';
+  for(let i = 0; i < count; i++) {
+    json += PROPS.getProperty('job_chunk_' + i) || '';
+  }
+  try { return JSON.parse(json); } catch(e) { return null; }
+}
+
+function clearJobState() {
+  const countStr = PROPS.getProperty('job_chunks_count');
+  if (countStr) {
+    const count = parseInt(countStr, 10);
+    for(let i = 0; i < count; i++) PROPS.deleteProperty('job_chunk_' + i);
+    PROPS.deleteProperty('job_chunks_count');
+  }
+}
+
+function withRetry(action, maxRetries = 3) {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return action();
+    } catch (e) {
+      attempt++;
+      if (attempt >= maxRetries) throw e;
+      Utilities.sleep(Math.pow(2, attempt) * 1000 + Math.round(Math.random() * 500));
+    }
+  }
 }
 
 // ============================================================
@@ -161,7 +218,7 @@ function countFolderContents(folder, stats, depth) {
 // ============================================================
 
 function startDuplication(e) {
-  PROPS.deleteProperty('current_job');
+  clearJobState();
 
   const folderId = e.parameters.folderId;
   const folderName = e.parameters.folderName;
@@ -172,26 +229,33 @@ function startDuplication(e) {
   const destLocation = formInputs.dest_location ? formInputs.dest_location[0] : 'same';
   const customDestId = formInputs.custom_dest_id ? formInputs.custom_dest_id[0].trim() : '';
   const exclusionsRaw = formInputs.exclusions ? formInputs.exclusions[0] : '';
-  const exclusions = exclusionsRaw.split(',').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  const useRegex = formInputs.use_regex && formInputs.use_regex[0] === 'yes';
+  
+  const exclusions = exclusionsRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 
   try {
     const sourceFolder = DriveApp.getFolderById(folderId);
-    let parentFolder;
+    let parentFolderId;
 
     if (destLocation === 'custom' && customDestId) {
-      try { parentFolder = DriveApp.getFolderById(customDestId); }
+      try { DriveApp.getFolderById(customDestId); parentFolderId = customDestId; }
       catch(err) { return buildErrorCard('ID de destination invalide ou inaccessible.'); }
     } else if (destLocation === 'root') {
-      parentFolder = DriveApp.getRootFolder();
+      parentFolderId = DriveApp.getRootFolder().getId();
     } else {
       const parents = sourceFolder.getParents();
-      parentFolder = parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+      parentFolderId = parents.hasNext() ? parents.next().getId() : DriveApp.getRootFolder().getId();
     }
 
-    const destFolder = parentFolder.createFolder(destName);
-    const destFolderId = destFolder.getId();
-    const stats = { folders: 0, files: 0, errors: [], skipped: 0 };
+    const destFolder = withRetry(() => Drive.Files.create({
+      name: destName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentFolderId]
+    }, null, { supportsAllDrives: true }));
 
+    const destFolderId = destFolder.id;
+
+    const stats = { folders: 0, files: 0, errors: [], skipped: 0 };
     const job = {
       sourceFolderId: folderId,
       sourceName: folderName,
@@ -199,35 +263,50 @@ function startDuplication(e) {
       destName: destName,
       copyFiles: copyFiles,
       exclusions: exclusions,
+      useRegex: useRegex,
       stats: stats,
-      queue: [[folderId, destFolderId]] // Format compressé [sourceId, destId]
+      queue: [[folderId, destFolderId]] 
     };
 
     const result = runDuplicationJob(job, new Date().getTime());
 
     if (result.completed) {
-      PROPS.deleteProperty('current_job');
+      clearJobState();
       saveToHistory(folderName, destName, destFolderId, result.stats);
       return buildResultCard(destName, destFolderId, result.stats, copyFiles);
     } else {
-      PROPS.setProperty('current_job', JSON.stringify(result.job));
+      saveJobState(result.job);
       return buildProgressCard(result.job);
     }
 
   } catch (err) {
-    PROPS.deleteProperty('current_job');
+    clearJobState();
     return buildErrorCard(err.message);
   }
 }
 
 function runDuplicationJob(job, startTime) {
   const queue = job.queue;
-  const destFoldersCache = {};
 
   function addError(msg) {
     if (job.stats.errors.length < 50) {
       job.stats.errors.push(msg.length > 100 ? msg.substring(0, 97) + '...' : msg);
     }
+  }
+
+  function isExcluded(name) {
+    if (!job.exclusions || job.exclusions.length === 0) return false;
+    for (let i = 0; i < job.exclusions.length; i++) {
+      if (job.useRegex) {
+        try {
+          const regex = new RegExp(job.exclusions[i], 'i');
+          if (regex.test(name)) return true;
+        } catch(e) { /* ignore invalid regex */ }
+      } else {
+        if (name.toLowerCase().trim() === job.exclusions[i].toLowerCase()) return true;
+      }
+    }
+    return false;
   }
 
   while (queue.length > 0) {
@@ -244,15 +323,15 @@ function runDuplicationJob(job, startTime) {
     do {
       try {
         const query = "'" + currentSourceId + "' in parents and trashed = false";
-        const response = Drive.Files.list({
+        const response = withRetry(() => Drive.Files.list({
           q: query,
           fields: "nextPageToken, files(id, name, mimeType)",
           pageSize: 1000,
           pageToken: pageToken,
           supportsAllDrives: true,
           includeItemsFromAllDrives: true
-        });
-
+        }));
+        
         const children = response.files;
 
         if (children && children.length > 0) {
@@ -260,31 +339,32 @@ function runDuplicationJob(job, startTime) {
             const child = children[i];
 
             if (child.mimeType === 'application/vnd.google-apps.folder') {
-              if (job.exclusions.indexOf(child.name.toLowerCase().trim()) !== -1) {
+              if (isExcluded(child.name)) {
                 job.stats.skipped++;
                 continue;
               }
               try {
-                if (!destFoldersCache[currentDestId]) {
-                  destFoldersCache[currentDestId] = DriveApp.getFolderById(currentDestId);
-                }
-                const newFolder = destFoldersCache[currentDestId].createFolder(child.name);
+                const newFolder = withRetry(() => Drive.Files.create({
+                  name: child.name,
+                  mimeType: 'application/vnd.google-apps.folder',
+                  parents: [currentDestId]
+                }, null, { supportsAllDrives: true }));
+
                 job.stats.folders++;
-                queue.push([child.id, newFolder.getId()]);
+                queue.push([child.id, newFolder.id]);
               } catch (errFolder) {
                 addError('Création dossier "' + child.name + '" : ' + errFolder.message);
               }
 
             } else if (child.mimeType === 'application/vnd.google-apps.shortcut') {
-              continue; // Les raccourcis sont ignorés
-
+              continue;
             } else {
               if (job.copyFiles) {
                 try {
-                  Drive.Files.copy({
+                  withRetry(() => Drive.Files.copy({
                     name: child.name,
                     parents: [currentDestId]
-                  }, child.id, { supportsAllDrives: true });
+                  }, child.id, { supportsAllDrives: true }));
                   job.stats.files++;
                 } catch (errFile) {
                   addError('Copie fichier "' + child.name + '" : ' + errFile.message);
@@ -294,7 +374,6 @@ function runDuplicationJob(job, startTime) {
           }
         }
         pageToken = response.nextPageToken;
-
       } catch (e) {
         addError('Lecture du dossier source échouée : ' + e.message);
         break;
@@ -310,31 +389,23 @@ function runDuplicationJob(job, startTime) {
 // ============================================================
 
 function resumeDuplication(e) {
-  const jobRaw = PROPS.getProperty('current_job');
-  if (!jobRaw) return buildErrorCard('Aucune duplication en cours.');
-
-  let job;
-  try {
-    job = JSON.parse(jobRaw);
-  } catch(e) {
-    PROPS.deleteProperty('current_job');
-    return buildErrorCard('Données de reprise corrompues. Veuillez relancer la duplication.');
-  }
+  const job = loadJobState();
+  if (!job) return buildErrorCard('Aucune duplication en cours ou données corrompues.');
 
   const result = runDuplicationJob(job, new Date().getTime());
 
   if (result.completed) {
-    PROPS.deleteProperty('current_job');
+    clearJobState();
     saveToHistory(job.sourceName, job.destName, job.destFolderId, result.stats);
     return buildResultCard(job.destName, job.destFolderId, result.stats, job.copyFiles);
   } else {
-    PROPS.setProperty('current_job', JSON.stringify(result.job));
+    saveJobState(result.job);
     return buildProgressCard(result.job);
   }
 }
 
 // ============================================================
-// HISTORIQUE
+// HISTORIQUE ET UTILITAIRES DE CARTES (INCHANGÉS OU PRESQUE)
 // ============================================================
 
 function buildHistorySection() {
@@ -342,7 +413,6 @@ function buildHistorySection() {
     .setHeader('Historique')
     .setCollapsible(true)
     .setNumUncollapsibleWidgets(0);
-
   const historyRaw = PROPS.getProperty('history');
   const history = historyRaw ? JSON.parse(historyRaw) : [];
 
@@ -393,10 +463,6 @@ function clearHistory(e) {
     .setNavigation(CardService.newNavigation().updateCard(updatedCard))
     .build();
 }
-
-// ============================================================
-// CARTES UTILITAIRES
-// ============================================================
 
 function buildProgressCard(job) {
   return CardService.newCardBuilder()
@@ -469,10 +535,6 @@ function buildErrorCard(message) {
     .addSection(buildFooterSection())
     .build();
 }
-
-// ============================================================
-// AUTORISATION INITIALE (à exécuter une fois manuellement)
-// ============================================================
 
 function authorizeNow() {
   const root = DriveApp.getRootFolder();
