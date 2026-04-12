@@ -1,4 +1,4 @@
-# Dupliquer une Arborescence — Google Drive Add-on
+# Dupliquer une arborescence — Google Drive Add-on
 
 Un Add-on Google Drive permettant de dupliquer l'arborescence complète d'un dossier, avec gestion intelligente des grandes structures via reprise automatique en arrière-plan.
 
