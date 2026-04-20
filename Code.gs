@@ -165,6 +165,10 @@ const I18N = {
     fr: "Utiliser les expressions régulières",
     en: "Use regular expressions"
   },
+  SYNC_PERM_OPT: {
+    fr: "Conserver les droits de partage (Plus lent)",
+    en: "Preserve sharing permissions (Slower)"
+  },
   START_BTN: {
     fr: "Lancer la duplication",
     en: "Start duplication"
@@ -362,8 +366,8 @@ const I18N = {
     en: "The duplication of your folder tree completed successfully."
   },
   EMAIL_SUCCESS_BODY_2: {
-    fr: "La duplication de votre arborescence Google Drive est terminée. Voici le résumé :",
-    en: "The duplication of your Google Drive folder tree is complete. Here is the summary:"
+    fr: "La duplication de votre arborescence Google Drive est terminée. <br>Voici le résumé :",
+    en: "The duplication of your Google Drive folder tree is complete. <br>Here is the summary:"
   },
   EMAIL_SUCCESS_ERR: {
     fr: "%s erreur(s) rencontrée(s) (voir les logs pour les détails).",
@@ -535,7 +539,6 @@ function onDriveItemsSelected(e) {
   const carte = CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader()
       .setTitle(t('TITLE'))
-      .setSubtitle(t('SUBTITLE'))
       .setImageUrl(ICONES_MD.LOGO)
       .setImageStyle(CardService.ImageStyle.CIRCLE));
 
@@ -603,7 +606,11 @@ function onDriveItemsSelected(e) {
     .addWidget(CardService.newSelectionInput()
       .setType(CardService.SelectionInputType.CHECK_BOX)
       .setFieldName("arriere_plan")
-      .addItem(t('RUN_BG_OPT'), "oui", true)));
+      .addItem(t('RUN_BG_OPT'), "oui", true))
+    .addWidget(CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.CHECK_BOX)
+      .setFieldName("conserver_droits")
+      .addItem(t('SYNC_PERM_OPT'), "oui", false)));
 
   // Section : Options avancées (collapsible — Material Design progressive disclosure)
   carte.addSection(CardService.newCardSection()
@@ -941,6 +948,7 @@ function lancerDuplication(e) {
   const nomDestination = obtenirValeurFormulaire_(entreesFormulaire, "nom_copie", t('COPY_OF', nomDossier)).trim();
   const copierFichiers = estCoche_(entreesFormulaire, "copier_fichiers");
   const executerArriereplan = estCoche_(entreesFormulaire, "arriere_plan");
+  const conserverDroits = estCoche_(entreesFormulaire, "conserver_droits");
   const emplacementDest = obtenirValeurFormulaire_(entreesFormulaire, "emplacement_dest", "meme");
   const idDestPersonnalise = obtenirValeurFormulaire_(entreesFormulaire, "id_dest_personnalise").trim();
   const exclusionsBrutes = obtenirValeurFormulaire_(entreesFormulaire, "exclusions");
@@ -985,6 +993,10 @@ function lancerDuplication(e) {
       parents: [idDossierParent]
     }, null, { supportsAllDrives: true }));
 
+    if (conserverDroits) {
+      synchroniserDroits_(idDossier, dossierDestination.id);
+    }
+
     /** @type {{ dossiers: number, fichiers: number, erreurs: !Array<string>, ignores: number }} */
     const statistiques = { dossiers: 0, fichiers: 0, erreurs: [], ignores: 0 };
 
@@ -995,6 +1007,7 @@ function lancerDuplication(e) {
       nomDestination,
       copierFichiers,
       executerArriereplan,
+      conserverDroits,
       emailUtilisateur: Session.getEffectiveUser().getEmail(),
       exclusions,
       utiliserRegex,
@@ -1139,6 +1152,10 @@ function executerDuplication(tache, heureDebut, estArriereplan = false) {
                 Drive.Files.create(metadonneesDossier, null, { supportsAllDrives: true })
               );
 
+              if (tache.conserverDroits) {
+                synchroniserDroits_(enfant.id, nouveauDossier.id);
+              }
+
               tache.statistiques.dossiers++;
               fileAttente.push([enfant.id, nouveauDossier.id]);
             } catch (errDossier) {
@@ -1154,9 +1171,13 @@ function executerDuplication(tache, heureDebut, estArriereplan = false) {
                 const metadonneesFichier = { parents: [idDestActuel], name: enfant.name };
                 if (enfant.description) metadonneesFichier.description = enfant.description;
 
-                avecRetentative_(() =>
+                const nouveauFichier = avecRetentative_(() =>
                   Drive.Files.copy(metadonneesFichier, enfant.id, { supportsAllDrives: true })
                 );
+
+                if (tache.conserverDroits) {
+                  synchroniserDroits_(enfant.id, nouveauFichier.id);
+                }
 
                 tache.statistiques.fichiers++;
               } catch (errFichier) {
@@ -1809,4 +1830,45 @@ function construireCarteErreur(message) {
 function autoriserMaintenant() {
   const racine = DriveApp.getRootFolder();
   console.log("Autorisation complète OK — " + racine.getName());
+}
+
+/**
+ * Synchronise les permissions d'un fichier ou dossier source vers la destination.
+ * 
+ * @param {string} idSource L'ID du fichier/dossier source.
+ * @param {string} idDest L'ID du fichier/dossier de destination.
+ * @private
+ */
+function synchroniserDroits_(idSource, idDest) {
+  try {
+    const permissionsListe = avecRetentative_(() => Drive.Permissions.list(idSource, {
+      supportsAllDrives: true,
+      fields: "permissions(emailAddress, role, type, deleted)"
+    }));
+    
+    const permissions = permissionsListe.permissions;
+    if (!permissions || permissions.length === 0) return;
+
+    permissions.forEach(perm => {
+      // On ignore les permissions supprimées ou sans email.
+      if (perm.deleted || !perm.emailAddress) return;
+      // On ignore le rôle "owner" car inhérent à la création
+      if (perm.role === 'owner') return;
+
+      try {
+        avecRetentative_(() => Drive.Permissions.create({
+          role: perm.role,
+          type: perm.type,
+          emailAddress: perm.emailAddress
+        }, idDest, {
+          supportsAllDrives: true,
+          sendNotificationEmail: false
+        }));
+      } catch (err) {
+        console.warn(`Impossible d'ajouter la permission pour ${perm.emailAddress} sur ${idDest} : ${err.message}`);
+      }
+    });
+  } catch (e) {
+    console.warn(`Impossible de lire les permissions du source ${idSource} : ${e.message}`);
+  }
 }
