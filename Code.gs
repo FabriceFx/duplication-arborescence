@@ -2,7 +2,7 @@
 // DUPLIQUER UNE ARBORESCENCE — Google Drive Add-on
 // ============================================================
 // Auteur  : Fabrice FAUCHEUX
-// Version : v4.1 (Bilingue FR/EN)
+// Version : v4.3 (Bilingue FR/EN)
 // ============================================================
 //
 // DESCRIPTION
@@ -366,8 +366,8 @@ const I18N = {
     en: "The duplication of your folder tree completed successfully."
   },
   EMAIL_SUCCESS_BODY_2: {
-    fr: "La duplication de votre arborescence Google Drive est terminée. <br>Voici le résumé :",
-    en: "The duplication of your Google Drive folder tree is complete. <br>Here is the summary:"
+    fr: "La duplication de votre arborescence Google Drive est terminée. Voici le résumé :",
+    en: "The duplication of your Google Drive folder tree is complete. Here is the summary:"
   },
   EMAIL_SUCCESS_ERR: {
     fr: "%s erreur(s) rencontrée(s) (voir les logs pour les détails).",
@@ -471,7 +471,7 @@ const DUREE_MAX_MS_UI = 25 * 1000;
 const DUREE_MAX_MS_ARRPLAN = 250 * 1000;
 
 /** @const {string} Version de l'add-on */
-const VERSION = "v4.1";
+const VERSION = "v4.3 - 23 avril 2026";
 
 /** @const {string} Auteur de l'add-on */
 const AUTEUR = "Fabrice FAUCHEUX";
@@ -539,6 +539,7 @@ function onDriveItemsSelected(e) {
   const carte = CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader()
       .setTitle(t('TITLE'))
+      .setSubtitle(t('SUBTITLE'))
       .setImageUrl(ICONES_MD.LOGO)
       .setImageStyle(CardService.ImageStyle.CIRCLE));
 
@@ -965,26 +966,31 @@ function lancerDuplication(e) {
   }
 
   try {
-    const dossierSource = DriveApp.getFolderById(idDossier);
     let idDossierParent;
+    let dossierSourceInfo;
+
+    try {
+      dossierSourceInfo = avecRetentative_(() => Drive.Files.get(idDossier, { fields: 'parents', supportsAllDrives: true }));
+    } catch (e) {
+      return construireCarteErreur(t('INVALID_SOURCE_ID'));
+    }
 
     if (emplacementDest === "personnalise" && idDestPersonnalise) {
       if (!estIdDriveValide_(idDestPersonnalise)) {
         return construireCarteErreur(t('INVALID_DEST_CHARS'));
       }
       try {
-        DriveApp.getFolderById(idDestPersonnalise);
+        avecRetentative_(() => Drive.Files.get(idDestPersonnalise, { fields: 'id', supportsAllDrives: true }));
         idDossierParent = idDestPersonnalise;
       } catch (err) {
         return construireCarteErreur(t('INVALID_DEST_ID'));
       }
     } else if (emplacementDest === "racine") {
-      idDossierParent = DriveApp.getRootFolder().getId();
+      idDossierParent = 'root';
     } else {
-      const parents = dossierSource.getParents();
-      idDossierParent = parents.hasNext()
-        ? parents.next().getId()
-        : DriveApp.getRootFolder().getId();
+      idDossierParent = (dossierSourceInfo.parents && dossierSourceInfo.parents.length > 0)
+        ? dossierSourceInfo.parents[0]
+        : 'root';
     }
 
     const dossierDestination = avecRetentative_(() => Drive.Files.create({
@@ -1828,8 +1834,8 @@ function construireCarteErreur(message) {
  * le consentement OAuth lors du premier déploiement.
  */
 function autoriserMaintenant() {
-  const racine = DriveApp.getRootFolder();
-  console.log("Autorisation complète OK — " + racine.getName());
+  const racine = Drive.Files.get('root', { fields: 'name' });
+  console.log("Autorisation complète OK — " + racine.name);
 }
 
 /**
