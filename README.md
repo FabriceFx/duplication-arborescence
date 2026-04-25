@@ -1,134 +1,123 @@
-# Dupliquer une arborescence — Google Drive Add-on
+# 📂 Dupliquer une Arborescence | Duplicate Folder Tree
+> Un Add-on Google Workspace puissant pour cloner des structures de dossiers complexes sans effort.
 
-Un Add-on Google Drive permettant de dupliquer l'arborescence complète d'un dossier, avec gestion intelligente des grandes structures via reprise automatique en arrière-plan.
+[![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google-apps-script&logoColor=white)](https://developers.google.com/apps-script)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+[![Version](https://img.shields.io/badge/version-4.3-green?style=for-the-badge)](https://github.com)
 
----
+**Dupliquer une arborescence** est un module complémentaire pour Google Drive conçu pour surmonter les limitations natives de Google. Il permet de copier intégralement une structure de dossiers, avec ou sans fichiers, tout en gérant intelligemment les dépassements de temps (timeout) grâce à un moteur de traitement en arrière-plan.
 
-## Fonctionnalités
+## ✨ Points Forts (Features)
 
-- **Duplication d'arborescence** — copie récursive de tous les sous-dossiers avec préservation des couleurs et descriptions
-- **Copie des fichiers** — optionnelle, activable à la demande
-- **Destinations flexibles** — même emplacement, racine de Mon Drive, ou dossier personnalisé via ID
-- **Exclusions** — filtrage par nom exact ou expression régulière
-- **Aperçu préalable** — statistiques de l'arborescence avant lancement (dossiers, fichiers, profondeur)
-- **Mode arrière-plan** — traitement automatique des grandes arborescences avec reprise sur timeout
-- **Notification par email** — confirmation à la fin du traitement en arrière-plan
-- **Historique** — suivi des 10 dernières duplications avec accès direct aux dossiers créés
-- **Compatibilité Drives partagés** — support complet via `supportsAllDrives`
+- **🚀 Performance & Robustesse** : Utilise un algorithme **BFS (Breadth-First Search)** pour un parcours stable des dossiers, évitant les erreurs de récursion.
+- **🔄 Reprise Automatique** : Système de *checkpoint* sauvegardant l'état du job dans le `PropertiesService` par segments (chunks) pour contourner la limite de 9 Ko.
+- **⏱️ Gestion du Timeout** : Détection automatique des limites d'exécution (6 min sur Google Apps Script) avec programmation de triggers de relance.
+- **🛡️ Options Avancées** :
+  - Filtrage par **expressions régulières (Regex)** ou noms exacts.
+  - Synchronisation des **droits de partage** (permissions).
+  - Préservation des descriptions et des couleurs de dossiers.
+- **📧 Notification Email** : Rapport détaillé envoyé automatiquement une fois la duplication terminée en arrière-plan.
+- **📜 Historique** : Accès rapide aux 10 dernières opérations effectuées.
 
----
-
-## Installation
+## 🛠️ Installation & Prérequis
 
 ### Prérequis
+- Un compte Google (Personnel ou Google Workspace).
+- L'API Google Drive activée sur votre projet Apps Script.
 
-- Un compte Google
-- Accès à [Google Apps Script](https://script.google.com)
+### Étapes de déploiement
+1. Ouvrez [Google Apps Script](https://script.google.com).
+2. Créez un nouveau projet et collez le contenu de `Code.gs`.
+3. Activez le service avancé : **Services > Drive API v3**.
+4. Modifiez le fichier `appsscript.json` (Paramètres du projet > Afficher le fichier manifeste) avec le contenu fourni.
+5. **Déploiement** : 
+   - Cliquez sur `Déployer` > `Nouveau déploiement`.
+   - Sélectionnez `Add-on Google Workspace`.
+6. **Autorisation** : Exécutez la fonction `autoriserMaintenant()` dans l'éditeur pour valider les scopes OAuth.
 
-### Étapes
+## 🚀 Utilisation
 
-1. Créez un nouveau projet sur [script.google.com](https://script.google.com)
-2. Copiez le contenu de `Code.gs` dans l'éditeur
-3. Remplacez le contenu de `appsscript.json` par le fichier fourni
-   > Pour afficher `appsscript.json` : *Paramètres du projet → Afficher le fichier manifeste*
-4. Activez l'API Drive avancée : *Services → Drive API v3*
-5. Cliquez sur **Déployer → Nouveau déploiement**
-   - Type : *Add-on Google Workspace*
-   - Accès : *Moi-même* (test) ou *Tout le monde* (production)
-6. Installez le déploiement depuis *drive.google.com → Extensions → Add-ons*
-7. Lancez `authorizeNow()` une première fois depuis l'éditeur pour déclencher les autorisations OAuth
+1. Sélectionnez un dossier dans votre interface **Google Drive**.
+2. Lancez l'Add-on depuis le panneau latéral droit.
+3. Configurez vos options (Nom, Destination, Exclusions).
+4. Cliquez sur **Lancer la duplication**.
+   - *Note : Pour les dossiers volumineux, cochez "Exécuter en arrière-plan".*
 
----
+## 🏗️ Technologies Utilisées
 
-## Utilisation
+- **Langage** : Google Apps Script (JavaScript V8)
+- **API** : Google Drive API v3 (Advanced Service)
+- **UI** : Card Service (Material Design)
+- **Persistence** : PropertiesService (User Properties)
 
-1. Dans Google Drive, sélectionnez un dossier
-2. Ouvrez le panneau latéral de l'Add-on
-3. Configurez les options :
+## 🤝 Contribution & Licence
 
-| Option | Description |
-|---|---|
-| **Nom de la copie** | Nom du dossier destination (pré-rempli) |
-| **Destination** | Même emplacement, racine, ou ID personnalisé |
-| **Copier les fichiers** | Inclut les fichiers en plus des dossiers |
-| **Mode arrière-plan** | Recommandé pour les grandes arborescences |
-| **Dossiers à ignorer** | Noms séparés par des virgules |
-| **Expressions régulières** | Active le filtrage regex sur les exclusions |
+Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une *Issue* ou une *Pull Request*.
 
-4. Cliquez sur **Lancer la duplication**
-5. En mode arrière-plan, un email vous est envoyé à la fin du traitement
+Ce projet est sous licence **GNU GPL v3**. Voir le fichier [LICENSE](./LICENSE) pour plus de détails.
 
----
+## 👤 Auteur
 
-## Architecture technique
+- **Fabrice FAUCHEUX** - *Développement initial & Architecture*
 
-### Gestion du timeout
+# 📂 Duplicate Folder Tree | Dupliquer une Arborescence
+> A professional Google Workspace Add-on to clone complex folder structures effortlessly.
 
-Google Apps Script impose une limite d'exécution de 6 minutes. Le script utilise deux seuils de sécurité :
+[![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google-apps-script&logoColor=white)](https://developers.google.com/apps-script)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+[![Version](https://img.shields.io/badge/version-4.3-green?style=for-the-badge)](https://github.com)
 
-| Mode | Seuil | Déclenchement |
-|---|---|---|
-| Interactif | 25 secondes | L'utilisateur attend dans l'UI |
-| Arrière-plan | 4 minutes | Trigger automatique |
+**Duplicate Folder Tree** is a Google Drive add-on designed to overcome native Google limitations. It allows for the full copy of folder structures, with or without files, while intelligently managing execution timeouts through a background processing engine.
 
-Lorsque le seuil est atteint, l'état est sauvegardé et un nouveau trigger est programmé automatiquement pour reprendre 1 minute plus tard.
+## ✨ Features
 
-### Persistance de l'état
+- **🚀 Performance & Robustness**: Uses a **BFS (Breadth-First Search)** algorithm for stable folder traversal, avoiding recursion stack overflows.
+- **🔄 Automatic Resume**: Checkpoint system saves job state in `PropertiesService` using chunks to bypass the 9 KB property limit.
+- **⏱️ Timeout Management**: Automatically detects execution limits (6 min on Google Apps Script) and schedules triggers to resume.
+- **🛡️ Advanced Options**:
+  - Filtering via **Regular Expressions (Regex)** or exact names.
+  - **Sharing Permissions** synchronization.
+  - Preserves folder descriptions and custom colors.
+- **📧 Email Notification**: Detailed report automatically sent once the background duplication is complete.
+- **📜 History**: Quick access to the last 10 duplication operations.
 
-`PropertiesService` est limité à 9 ko par propriété. L'état du job est découpé en chunks de 8 000 caractères :
+## 🛠️ Installation & Prerequisites
 
-```
-job_chunks_count  →  nombre de chunks
-job_chunk_0       →  début du JSON
-job_chunk_1       →  suite...
-```
+### Prerequisites
+- A Google Account (Personal or Google Workspace).
+- Google Drive API enabled on your Apps Script project.
 
-### Moteur de duplication
+### Deployment Steps
+1. Open [Google Apps Script](https://script.google.com).
+2. Create a new project and paste the `Code.gs` content.
+3. Enable the advanced service: **Services > Drive API v3**.
+4. Update the `appsscript.json` file (Project Settings > Show manifest file) with the provided content.
+5. **Deployment**: 
+   - Click `Deploy` > `New deployment`.
+   - Select `Google Workspace Add-on`.
+6. **Authorization**: Run the `autoriserMaintenant()` function in the editor to grant OAuth scopes.
 
-La traversée de l'arborescence utilise une **file d'attente BFS** (largeur d'abord) plutôt qu'une récursion, ce qui évite tout risque de stack overflow sur les arborescences profondes et offre une progression visible niveau par niveau.
+## 🚀 Usage
 
-### Structure du code
+1. Select a folder in your **Google Drive** interface.
+2. Launch the Add-on from the right side panel.
+3. Configure your settings (Name, Destination, Exclusions).
+4. Click **Start duplication**.
+   - *Note: For large directories, check "Run in background".*
 
-```
-onDriveItemsSelected()      Point d'entrée principal (UI)
-previewFolder()             Aperçu rapide de l'arborescence
-startDuplication()          Initialisation et lancement
-runDuplicationJob()         Moteur de duplication (BFS)
-scheduleBackgroundJob()     Création du trigger de reprise
-processBackgroundJob()      Exécution en arrière-plan
-resumeDuplication()         Reprise manuelle depuis l'UI
-saveJobState/loadJobState   Persistance par chunks
-buildXxxCard()              Constructeurs de cartes UI
-saveToHistory()             Historique des duplications
-```
+## 🏗️ Tech Stack
 
----
+- **Language**: Google Apps Script (JavaScript V8)
+- **API**: Google Drive API v3 (Advanced Service)
+- **UI**: Card Service (Material Design)
+- **Persistence**: PropertiesService (User Properties)
 
-## Permissions requises
+## 🤝 Contribution & License
 
-| Scope OAuth | Utilisation |
-|---|---|
-| `drive` | Lecture et écriture dans Google Drive |
-| `drive.addons.metadata.readonly` | Métadonnées de l'Add-on |
-| `script.scriptapp` | Création et gestion des triggers |
-| `script.send_mail` | Envoi de l'email de confirmation |
-| `userinfo.email` | Récupération de l'adresse email |
+Contributions are welcome! Feel free to open an *Issue* or a *Pull Request*.
 
----
+This project is licensed under **GNU GPL v3**. See the [LICENSE](./LICENSE) file for details.
 
-## Limitations connues
+## 👤 Author
 
-- L'aperçu est limité à 1 000 éléments pour rester dans les délais d'exécution
-- L'historique conserve les 10 dernières duplications uniquement
-- Les raccourcis Drive (`application/vnd.google-apps.shortcut`) sont ignorés volontairement
-- En cas de crash inattendu en arrière-plan, une reprise manuelle reste possible via le panneau latéral
-
----
-
-## Licence
-
-MIT — libre d'utilisation, de modification et de distribution.
-
----
-
-*v3.1 · Fabrice FAUCHEUX*
+- **Fabrice FAUCHEUX** - *Initial Development & Architecture*
