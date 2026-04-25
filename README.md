@@ -1,4 +1,4 @@
-# 📂 Dupliquer une Arborescence | Duplicate Folder Tree
+# 📂 Dupliquer une arborescence | Duplicate Folder Tree
 > Un Add-on Google Workspace puissant pour cloner des structures de dossiers complexes sans effort.
 
 [![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google-apps-script&logoColor=white)](https://developers.google.com/apps-script)
@@ -7,19 +7,19 @@
 
 **Dupliquer une arborescence** est un module complémentaire pour Google Drive conçu pour surmonter les limitations natives de Google. Il permet de copier intégralement une structure de dossiers, avec ou sans fichiers, tout en gérant intelligemment les dépassements de temps (timeout) grâce à un moteur de traitement en arrière-plan.
 
-## ✨ Points Forts (Features)
+## ✨ Points forts (Features)
 
-- **🚀 Performance & Robustesse** : Utilise un algorithme **BFS (Breadth-First Search)** pour un parcours stable des dossiers, évitant les erreurs de récursion.
-- **🔄 Reprise Automatique** : Système de *checkpoint* sauvegardant l'état du job dans le `PropertiesService` par segments (chunks) pour contourner la limite de 9 Ko.
-- **⏱️ Gestion du Timeout** : Détection automatique des limites d'exécution (6 min sur Google Apps Script) avec programmation de triggers de relance.
-- **🛡️ Options Avancées** :
+- **🚀 Performance & robustesse** : Utilise un algorithme **BFS (Breadth-First Search)** pour un parcours stable des dossiers, évitant les erreurs de récursion.
+- **🔄 Reprise automatique** : Système de *checkpoint* sauvegardant l'état du job dans le `PropertiesService` par segments (chunks) pour contourner la limite de 9 Ko.
+- **⏱️ Gestion du timeout** : Détection automatique des limites d'exécution (6 min sur Google Apps Script) avec programmation de triggers de relance.
+- **🛡️ Options avancées** :
   - Filtrage par **expressions régulières (Regex)** ou noms exacts.
   - Synchronisation des **droits de partage** (permissions).
   - Préservation des descriptions et des couleurs de dossiers.
 - **📧 Notification Email** : Rapport détaillé envoyé automatiquement une fois la duplication terminée en arrière-plan.
 - **📜 Historique** : Accès rapide aux 10 dernières opérations effectuées.
 
-## 🛠️ Installation & Prérequis
+## 🛠️ Installation & prérequis
 
 ### Prérequis
 - Un compte Google (Personnel ou Google Workspace).
@@ -43,14 +43,14 @@
 4. Cliquez sur **Lancer la duplication**.
    - *Note : Pour les dossiers volumineux, cochez "Exécuter en arrière-plan".*
 
-## 🏗️ Technologies Utilisées
+## 🏗️ Technologies utilisées
 
 - **Langage** : Google Apps Script (JavaScript V8)
 - **API** : Google Drive API v3 (Advanced Service)
 - **UI** : Card Service (Material Design)
 - **Persistence** : PropertiesService (User Properties)
 
-## 🤝 Contribution & Licence
+## 🤝 Contribution & licence
 
 Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une *Issue* ou une *Pull Request*.
 
