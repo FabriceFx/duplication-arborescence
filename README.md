@@ -1,4 +1,4 @@
-# 📦 Duplication d'Arborescence — Google Drive Add-on (v4.3)
+# 📦 Duplication d'Arborescence — Google Drive Add-on (v4.4)
 
 [🇫🇷 Version Française](#-version-française) | [🇬🇧 English Version](#-english-version)
 
@@ -29,7 +29,7 @@
 ### 🚀 Installation & configuration
 
 1. Ouvrez votre console Google Apps Script ou créez un projet d'Add-on Google Workspace.
-2. Copiez le code source dans un fichier **[Code.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Code.gs)**.
+2. Copiez le code source dans quatre fichiers distincts : `Configuration.gs`, `Persistance.gs`, `MoteurDuplication.gs` et `Interface.gs`.
 3. Configurez votre fichier manifeste **[appsscript.json](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/appsscript.json)** pour inclure l'extension Google Drive et déclarer les scopes d'accès.
 4. Déployez l'Add-on en mode test ou installez-le sur votre compte.
 5. Sélectionnez n'importe quel dossier dans Google Drive : le panneau latéral **"Dupliquer une arborescence"** apparaît !
@@ -38,7 +38,11 @@
 
 ### 🛠️ Structure du Projet
 
-- **[Code.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Code.gs)** : Contient l'intégralité du moteur de parcours BFS, les triggers automatiques, la persistance par chunks JSON et les constructeurs d'interface graphique CardService.
+L'application est structurée en 4 modules métiers pour des performances et une maintenabilité optimales :
+- **[Configuration.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Configuration.gs)** : Constantes, paramètres et dictionnaire de traductions (i18n).
+- **[Persistance.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Persistance.gs)** : Sauvegarde par segments via PropertiesService et gestion des déclencheurs d'arrière-plan.
+- **[MoteurDuplication.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/MoteurDuplication.gs)** : L'algorithme BFS optimisé en O(N) pour la copie massive de l'arborescence.
+- **[Interface.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Interface.gs)** : Gestion de l'UI Google Workspace (CardService) et notifications email.
 - **[appsscript.json](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/appsscript.json)** : Manifeste de l'extension spécifiant les dépendances d'API et les scopes OAuth Google Drive requis.
 
 ---
@@ -82,7 +86,7 @@ Ce projet est disponible sous licence **MIT**.
 ### 🚀 Installation & Setup
 
 1. Open your Google Apps Script editor or build a Google Workspace Add-on project.
-2. Place the source code into a file named **[Code.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Code.gs)**.
+2. Place the source code into four separate files: `Configuration.gs`, `Persistance.gs`, `MoteurDuplication.gs`, and `Interface.gs`.
 3. Configure your **[appsscript.json](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/appsscript.json)** manifest file to support Google Drive integrations and request mandatory scopes.
 4. Deploy the add-on for testing or install it globally on your workspace account.
 5. Select any directory inside Google Drive: the custom **"Duplicate a folder tree"** side panel will launch!
@@ -91,7 +95,11 @@ Ce projet est disponible sous licence **MIT**.
 
 ### 🛠️ Project Structure
 
-- **[Code.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Code.gs)**: Integrates the BFS queue traversal engine, serialization methods to split data segments, trigger planners, and CardService UI renderers.
+The application is structured into 4 distinct modules for maximum performance and maintainability:
+- **[Configuration.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Configuration.gs)**: Constants, settings, and native translation dictionary (i18n).
+- **[Persistance.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Persistance.gs)**: Chunk-based serialization via PropertiesService and background trigger management.
+- **[MoteurDuplication.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/MoteurDuplication.gs)**: The highly optimized O(N) BFS algorithm for massive folder tree duplication.
+- **[Interface.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Interface.gs)**: Google Workspace UI generation (CardService) and email notifications.
 - **[appsscript.json](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/appsscript.json)**: The extension manifest specifying Google Drive add-on contexts and mandatory API OAuth scopes.
 
 ---
