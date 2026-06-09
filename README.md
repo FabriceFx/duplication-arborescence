@@ -10,11 +10,11 @@
 
 <a href="https://developers.google.com/apps-script"><img src="https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google-apps-script&logoColor=white" alt="Google Apps Script"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-indigo?style=for-the-badge" alt="License: MIT"></a>
-<a href="README.md"><img src="https://img.shields.io/badge/Status-Stable-brightgreen?style=for-the-badge" alt="Status: Stable"></a>
+<a href="README.md"><img src="https://img.shields.io/badge/Status-Production-brightgreen?style=for-the-badge" alt="Status: Production"></a>
 
 ---
 
-### ✨ Fonctionnalités Clés
+### ✨ Fonctionnalités clés
 
 - 📁 **Copie Intégrale de Structure** : Duplique récursivement tous les sous-dossiers et fichiers (optionnel) avec conservation de la hiérarchie.
 - ⏱️ **Résistance au Timeout GAS (6 min)** : Découpe le travail en passes successives. Sauvegarde l'état actuel et programme un déclencheur temporel (`trigger`) pour reprendre automatiquement 1 min plus tard si nécessaire.
@@ -26,7 +26,7 @@
 
 ---
 
-### 🚀 Installation & Configuration
+### 🚀 Installation & configuration
 
 1. Ouvrez votre console Google Apps Script ou créez un projet d'Add-on Google Workspace.
 2. Copiez le code source dans un fichier **[Code.gs](file:///Users/fabrice/Documents/Mes%20développements/Duplication%20d'arborescence/Code.gs)**.
@@ -55,12 +55,15 @@ Ce projet est disponible sous licence **MIT**.
 
 ---
 
+---
+
 ## 🇬🇧 English Version
 
 > A professional Google Drive Add-on to duplicate complete folder structures (with optional subfolders and files copying) into custom locations, featuring automatic time-limit crash recovery for very large directories.
 
 <a href="https://developers.google.com/apps-script"><img src="https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google-apps-script&logoColor=white" alt="Google Apps Script"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-indigo?style=for-the-badge" alt="License: MIT"></a>
+<a href="README.md"><img src="https://img.shields.io/badge/Status-Production-brightgreen?style=for-the-badge" alt="Status: Production"></a>
 
 ---
 
@@ -102,6 +105,8 @@ Ce projet est disponible sous licence **MIT**.
 ### 📄 License
 
 This project is licensed under the terms of the **MIT License**.
+
+---
 
 ---
 <p align="center"><a href="https://faucheux.bzh" target="_blank" style="color: inherit; text-decoration: none;">&lt;&gt; par Fabrice Faucheux</a></p>

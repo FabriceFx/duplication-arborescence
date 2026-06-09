@@ -1,0 +1,954 @@
+Voici une analyse critique et une proposition de **refactoring exigeant** pour votre code Google Apps Script (v4.3).
+
+---
+
+### 🔍 Analyse critique du code actuel
+
+Votre script possède déjà une excellente base architecturale (parcours BFS pour éviter la récursion profonde, gestion fine des limites de temps via des points de reprise, découpage des données persistées dans `PropertiesService`, approche bilingue, et interface graphique soignée).
+
+Cependant, pour atteindre un niveau de qualité de production rigoureux et "exigeant", plusieurs points faibles doivent être corrigés :
+
+1. **Monolithe difficile à maintenir** : Toutes les responsabilités (moteur algorithmique, persistance, i18n, gestion des déclencheurs et génération de l'UI CardService) sont réunies dans un unique fichier `Code.gs`.
+2. **Fuites d'abstractions et Typage implicite** : L'état global de la tâche (`tache`) utilise des structures d'objets anonymes malléables sans typage structurel ou objet strict. L'usage de JSDoc est incomplet.
+3. **Risques de bugs de variables (Scope Élargi)** : L'ensemble des constantes de configuration, dictionnaires i18n et instances de services sont déclarés dans le scope global du fichier. Dans l'environnement Google Apps Script (moteur V8), cela peut générer des collisions ou des instanciations inutiles lors de l'appel de fonctions simples par les triggers.
+4. **Gestion perfectible des quotas et performances** :
+* Les métadonnées comme `description` ou `folderColorRgb` sont vérifiées manuellement à coup de conditions en bloc.
+* L'usage de `fileAttente.shift()` au sein d'une boucle `while` sur de très grands tableaux a une complexité algorithmique de **O(N²)** à cause du décalage d'index en mémoire JavaScript. L'utilisation d'un pointeur de lecture sur le tableau permet d'optimiser le parcours à **O(N)**.
+
+
+5. **Erreur d'imbrication syntaxique** : À la fin de votre fichier actuel, la fonction `synchroniserDroits_` s'est retrouvée enfermée par inadvertance à l'intérieur du bloc de la fonction `construireCarteErreur` à cause d'une accolade fermante manquante ou mal placée.
+
+---
+
+### 🛠️ Stratégie de Refactoring Proposée
+
+Pour respecter les standards modernes de développement Google Apps Script, nous allons segmenter le projet en **4 modules métiers distincts**. Chaque module aura une responsabilité unique et bien définie :
+
+1. **`Configuration.gs`** : Définition de l'environnement, typages JSDoc, constantes isolées et gestionnaire i18n étanche.
+2. **`Persistance.gs`** : Classe utilitaire ou espace de noms gérant la sérialisation, le chunking dans `PropertiesService` et la gestion sécurisée des déclencheurs de sauvegarde.
+3. **`MoteurDuplication.gs`** : Coeur du script isolé des couches d'UI. Optimisation du parcours BFS (pointeur d'index), gestion des filtres par stratégie et appels d'API standardisés via Advanced Services.
+4. **`Interface.gs`** : Dédié uniquement à la construction des cartes graphiques CardService et des gabarits HTML d'emails.
+
+---
+
+### 💻 Le Code Refactorisé
+
+#### 1. `Configuration.gs`
+
+*Centralisation des structures de données, configurations immuables et dictionnaire i18n standardisé.*
+
+```javascript
+/**
+ * ============================================================================
+ * MODULE 1 : CONFIGURATION ET INTERNATIONALISATION (i18n)
+ * ============================================================================
+ */
+
+/**
+ * @typedef {Object} TaskStats
+ * @property {number} dossiers - Nombre de dossiers créés.
+ * @property {number} fichiers - Nombre de fichiers copiés.
+ * @property {number} erreurs - Nombre d'erreurs rencontrées.
+ * @property {number} ignores - Nombre d'éléments ignorés par les filtres.
+ */
+
+/**
+ * @typedef {Object} DuplicationTask
+ * @property {string} idDossierSource - ID du dossier source.
+ * @property {string} nomSource - Nom du dossier source.
+ * @property {string} idDossierDest - ID du dossier de destination.
+ * @property {string} nomDestination - Nom personnalisé du dossier de destination.
+ * @property {boolean} copierFichiers - Flag indiquant s'il faut copier les fichiers.
+ * @property {boolean} executerArriereplan - Mode asynchrone par triggers temporels.
+ * @property {boolean} conserverDroits - Flag pour la synchronisation ACL.
+ * @property {string} emailUtilisateur - Email du propriétaire du job.
+ * @property {string[]} exclusions - Liste des termes ou patterns à exclure.
+ * @property {boolean} utiliserRegex - Si vrai, traite les exclusions comme des RegExp.
+ * @property {TaskStats} statistiques - Compteurs d'exécution.
+ * @property {Array<[string, string]>} fileAttente - Queue BFS contenant des couples [idSource, idDest].
+ * @property {number} [indexFile] - Index de lecture optimisé pour le parcours de la file.
+ */
+
+const CONFIG = Object.freeze({
+  VERSION: "v4.4 - Refactored June 2026",
+  AUTEUR: "Fabrice FAUCHEUX (faucheux.bzh)",
+  DUREE_MAX_MS_UI: 25 * 1000,
+  DUREE_MAX_MS_ARRPLAN: 250 * 1000,
+  TAILLE_SEGMENT_PROPRIETE: 8000,
+  MAX_ERREURS_STOCKEES: 50,
+  MAX_ENTREES_HISTORIQUE: 10,
+  SEUIL_LIMITE_APERCU: 1000,
+  MIME_DOSSIER: "application/vnd.google-apps.folder",
+  MIME_RACCOURCI: "application/vnd.google-apps.shortcut",
+  REGEX_VALIDATION_ID: /^[a-zA-Z0-9_-]+$/,
+  COULEURS: Object.freeze({
+    PRIMAIRE: "#1A73E8",
+    SUR_SURFACE: "#202124",
+    SUR_SURFACE_VARIANTE: "#5F6368",
+    ERREUR: "#D93025",
+    SUCCES: "#34A853",
+    AVERTISSEMENT: "#EA8600",
+    SURFACE_VARIANTE: "#F1F3F4"
+  }),
+  ICONES: Object.freeze({
+    OUVRIR_NOUVEAU: "https://www.gstatic.com/images/icons/material/system/1x/open_in_new_googblue_18dp.png",
+    LOGO: "https://www.gstatic.com/images/icons/material/system/2x/folder_copy_googblue_48dp.png"
+  })
+});
+
+const DICTIONNAIRE_I18N = Object.freeze({
+  TITLE: { fr: "Dupliquer une arborescence", en: "Duplicate a folder tree" },
+  SUBTITLE: { fr: "Copie d'arborescences Google Drive", en: "Google Drive folder tree copy" },
+  SELECT_FOLDER_PROMPT: { fr: "Sélectionnez un dossier dans Google Drive pour commencer.", en: "Select a folder in Google Drive to start." },
+  WARNING: { fr: "Attention", en: "Warning" },
+  NOT_A_FOLDER: { fr: "Veuillez sélectionner un <b>dossier</b>, pas un fichier.", en: "Please select a <b>folder</b>, not a file." },
+  SOURCE_FOLDER: { fr: "Dossier source", en: "Source folder" },
+  PREVIEW_BTN: { fr: "Aperçu", en: "Preview" },
+  CONFIG_HEADER: { fr: "Configuration", en: "Settings" },
+  COPY_NAME_LABEL: { fr: "Nom de la copie", en: "Copy name" },
+  COPY_OF: { fr: "Copie de %s", en: "Copy of %s" },
+  DESTINATION_TITLE: { fr: "Destination", en: "Destination" },
+  DEST_SAME: { fr: "Même emplacement", en: "Same location" },
+  DEST_ROOT: { fr: "Racine de Mon Drive", en: "My Drive root" },
+  DEST_CUSTOM: { fr: "Autre dossier (coller son ID)", en: "Other folder (paste its ID)" },
+  DEST_CUSTOM_INT: { fr: "ID du dossier de destination", en: "Destination folder ID" },
+  DEST_CUSTOM_HINT: { fr: "Visible dans l'URL : drive.google.com/drive/folders/[ID]", en: "Visible in the URL: drive.google.com/drive/folders/[ID]" },
+  COPY_FILES_OPT: { fr: "Copier les fichiers en plus des dossiers", en: "Copy files in addition to folders" },
+  RUN_BG_OPT: { fr: "Exécuter en arrière-plan (recommandé)", en: "Run in background (recommended)" },
+  ADVANCED_OPTS: { fr: "Options avancées", en: "Advanced options" },
+  EXCLUSIONS_LABEL: { fr: "Dossiers à ignorer", en: "Folders to ignore" },
+  EXCLUSIONS_HINT: { fr: "Noms séparés par des virgules", en: "Comma-separated names" },
+  USE_REGEX_OPT: { fr: "Utiliser les expressions régulières", en: "Use regular expressions" },
+  SYNC_PERM_OPT: { fr: "Conserver les droits de partage (Plus lent)", en: "Preserve sharing permissions (Slower)" },
+  START_BTN: { fr: "Lancer la duplication", en: "Start duplication" },
+  RESUME_BTN: { fr: "Reprendre la duplication en cours", en: "Resume current duplication" },
+  INVALID_FOLDER_ID: { fr: "ID de dossier invalide.", en: "Invalid folder ID." },
+  REASONABLE_SIZE: { fr: "Taille raisonnable — duplication en une seule passe.", en: "Reasonable size — duplication in a single pass." },
+  LARGE_TREE: { fr: "Arborescence volumineuse", en: "Large folder tree" },
+  MULTIPLE_PASSES: { fr: "La duplication se fera en plusieurs passes automatiques.", en: "Duplication will be done in multiple automatic passes." },
+  LIMITED_PREVIEW: { fr: "Aperçu limité (>%s éléments). L'arborescence réelle est plus grande.", en: "Limited preview (>%s items). Actual folder tree is larger." },
+  SUBFOLDERS: { fr: "Sous-dossiers", en: "Subfolders" },
+  FILES: { fr: "Fichiers", en: "Files" },
+  DEPTH: { fr: "Profondeur", en: "Depth" },
+  LEVELS: { fr: "%s niveau(x)", en: "%s level(s)" },
+  BACK_BTN: { fr: "← Retour", en: "← Back" },
+  UNABLE_TO_READ_FOLDER: { fr: "Impossible de lire le dossier : %s", en: "Unable to read folder: %s" },
+  EMPTY_COPY_NAME: { fr: "Le nom de la copie ne peut pas être vide.", en: "The copy name cannot be empty." },
+  INVALID_SOURCE_ID: { fr: "L'ID du dossier source est invalide.", en: "The source folder ID is invalid." },
+  INVALID_DEST_CHARS: { fr: "L'ID de destination contient des caractères invalides.", en: "The destination folder ID contains invalid characters." },
+  INVALID_DEST_ID: { fr: "ID de destination invalide ou inaccessible.", en: "Invalid or inaccessible destination folder ID." },
+  HISTORY_HEADER: { fr: "Historique", en: "History" },
+  HISTORY_EMPTY: { fr: "Aucune duplication effectuée pour l'instant.", en: "No duplication performed yet." },
+  CLEAR_HISTORY_BTN: { fr: "Effacer l'historique", en: "Clear history" },
+  HISTORY_CLEARED: { fr: "Historique effacé.", en: "History cleared." },
+  HISTORY_OPEN_ALT: { fr: "Ouvrir le dossier", en: "Open folder" },
+  BG_PROCESSING_TITLE: { fr: "Traitement en cours", en: "Processing" },
+  BG_PROCESSING_SUB: { fr: "Duplication automatisée en arrière-plan", en: "Automated duplication in the background" },
+  BG_PROCESSING_MSG1: { fr: "Le script a pris le relais en arrière-plan.", en: "The script has taken over in the background." },
+  BG_PROCESSING_MSG2: { fr: "Vous pouvez fermer cet outil. Vous recevrez un email dès que la copie sera terminée.", en: "You can close this tool. You will receive an email as soon as the copy is finished." },
+  OPEN_FOLDER_BUILD: { fr: "Ouvrir le dossier (en construction)", en: "Open folder (under construction)" },
+  PASS_INCOMPLETE_TITLE: { fr: "Passe incomplète", en: "Incomplete pass" },
+  PASS_INCOMPLETE_SUB: { fr: "Traitement interrompu par le temps limite", en: "Processing interrupted by time limit" },
+  FOLDERS_CREATED: { fr: "Dossiers créés", en: "Folders created" },
+  FILES_COPIED: { fr: "Fichiers copiés", en: "Files copied" },
+  REMAINING_TO_PROCESS: { fr: "Restant à traiter", en: "Remaining to process" },
+  FOLDERS_IN_QUEUE: { fr: "%s dossier(s) en file d'attente", en: "%s folder(s) in queue" },
+  LARGE_TREE_CONTINUE: { fr: "L'arborescence est volumineuse. Cliquez sur <b>Continuer</b> pour la passe suivante.", en: "The folder tree is large. Click <b>Continue</b> for the next pass." },
+  CONTINUE_BTN: { fr: "Continuer la duplication", en: "Continue duplication" },
+  FOLDER_CREATED: { fr: "Dossier créé", en: "Folder created" },
+  SUBFOLDERS_CREATED: { fr: "Sous-dossiers créés", en: "Subfolders created" },
+  FOLDERS_IGNORED: { fr: "Dossiers ignorés", en: "Folders ignored" },
+  ERRORS_ENCOUNTERED: { fr: "%s erreur(s) rencontrée(s) :", en: "%s error(s) encountered:" },
+  AND_OTHERS: { fr: "…et %s autre(s).", en: "…and %s other(s)." },
+  OPEN_CREATED_FOLDER: { fr: "Ouvrir le dossier créé", en: "Open created folder" },
+  DUPLICATION_FINISHED_TITLE: { fr: "Duplication terminée", en: "Duplication finished" },
+  FOLDERS_CREATED_SUCCESS: { fr: "%s dossier(s) créé(s) avec succès", en: "%s folder(s) successfully created" },
+  ERROR_TITLE: { fr: "Erreur", en: "Error" },
+  PROBLEM_OCCURRED: { fr: "Un problème est survenu", en: "A problem occurred" },
+  NO_DUPLICATION_CORRUPTED: { fr: "Aucune duplication en cours ou données corrompues.", en: "No duplicate in progress or data corrupted." },
+  EMAIL_SUCCESS_SUBJECT: { fr: "Duplication terminée : %s", en: "Duplication finished: %s" },
+  EMAIL_SUCCESS_HELLO: { fr: "Bonjour", en: "Hello" },
+  EMAIL_SUCCESS_BODY_1: { fr: "La duplication de votre arborescence est terminée avec succès.", en: "The duplication of your folder tree completed successfully." },
+  EMAIL_SUCCESS_BODY_2: { fr: "La duplication de votre arborescence Google Drive est terminée. Voici le résumé :", en: "The duplication of your Google Drive folder tree is complete. Here is the summary:" },
+  EMAIL_SUCCESS_ERR: { fr: "%s erreur(s) rencontrée(s) (voir les logs pour les détails).", en: "%s error(s) encountered (check the logs for details)." },
+  EMAIL_SUCCESS_ERR_HTML: { fr: "⚠ %s erreur(s) rencontrée(s)", en: "⚠ %s error(s) encountered" },
+  EMAIL_SUCCESS_FOLDER: { fr: "Dossier : %s", en: "Folder: %s" },
+  EMAIL_SUCCESS_ACCESS: { fr: "Accéder au dossier : %s", en: "Access folder: %s" },
+  EMAIL_SUCCESS_OPEN_BTN: { fr: "Ouvrir le dossier", en: "Open folder" },
+  EMAIL_SUCCESS_SUBTITLE: { fr: "Votre arborescence a été dupliquée avec succès", en: "Your folder tree has been duplicated successfully" },
+  EMAIL_FAILED_SUBJECT: { fr: "Échec de la duplication de %s", en: "Duplication failed for %s" },
+  EMAIL_FAILED_BODY_1: { fr: "La duplication en arrière-plan s'est arrêtée suite à une erreur :", en: "The background duplication stopped due to an error:" },
+  EMAIL_FAILED_BODY_1_HTML: { fr: "La duplication en arrière-plan s'est arrêtée suite à une erreur inattendue.", en: "The background duplication stopped due to an unexpected error." },
+  EMAIL_FAILED_BODY_2: { fr: "Vous pouvez reprendre manuellement via l'interface de l'add-on.", en: "You can resume manually via the add-on interface." },
+  EMAIL_FAILED_TITLE: { fr: "Échec de la duplication", en: "Duplication failed" },
+  EMAIL_FAILED_DETAIL: { fr: "Détail de l'erreur", en: "Error details" },
+  EMAIL_FAILED_ACTION_TITLE: { fr: "Action recommandée", en: "Recommended action" },
+  EMAIL_FAILED_ACTION_DESC: { fr: "Ouvrez Google Drive, sélectionnez le dossier source et utilisez le bouton <strong>« Reprendre la duplication en cours »</strong> dans le panneau latéral de l'add-on.", en: "Open Google Drive, select the source folder and use the <strong>\"Resume current duplication\"</strong> button in the add-on side panel." },
+  EMAIL_FOOTER_DESC: { fr: "Add-on Google Drive — Duplication d'arborescence", en: "Google Drive Add-on — Folder Tree Duplication" }
+});
+
+/**
+ * Système de traduction optimisé.
+ * @param {string} cle La clé dans le dictionnaire.
+ * @param {...string} args Remplacements dynamiques (%s).
+ * @return {string} Le texte final traduit.
+ */
+function t(cle, ...args) {
+  const locale = (Session.getActiveUserLocale() || "en").toLowerCase();
+  const langue = locale.startsWith('fr') ? 'fr' : 'en';
+  
+  if (!DICTIONNAIRE_I18N[cle]) {
+    console.warn(`Clé manquante : ${cle}`);
+    return cle;
+  }
+  
+  let texte = DICTIONNAIRE_I18N[cle][langue] || DICTIONNAIRE_I18N[cle]['en'];
+  for (const arg of args) {
+    texte = texte.replace('%s', arg);
+  }
+  return texte;
+}
+
+```
+
+#### 2. `Persistance.gs`
+
+*Gestion isolée de PropertiesService et encapsulation du cycle de vie des triggers temporels.*
+
+```javascript
+/**
+ * ============================================================================
+ * MODULE 2 : PERSISTANCE ET TRIGGERS D'ARRIÈRE-PLAN
+ * ============================================================================
+ */
+const PersistanceManager = {
+  getStore() {
+    return PropertiesService.getUserProperties();
+  },
+
+  /**
+   * Sauvegarde l'état d'un job de duplication par blocs segmentés.
+   * @param {DuplicationTask} tache
+   */
+  sauvegarderEtat(tache) {
+    this.supprimerEtat();
+    const store = this.getStore();
+    const json = JSON.stringify(tache);
+    const chunksCount = Math.ceil(json.length / CONFIG.TAILLE_SEGMENT_PROPRIETE);
+    
+    store.setProperty("nombre_segments_tache", chunksCount.toString());
+    for (let i = 0; i < chunksCount; i++) {
+      const debut = i * CONFIG.TAILLE_SEGMENT_PROPRIETE;
+      store.setProperty(`segment_tache_${i}`, json.substring(debut, debut + CONFIG.TAILLE_SEGMENT_PROPRIETE));
+    }
+  },
+
+  /**
+   * Charge et reconstitue l'état complet du job.
+   * @return {DuplicationTask|null}
+   */
+  chargerEtat() {
+    const store = this.getStore();
+    const countStr = store.getProperty("nombre_segments_tache");
+    if (!countStr) return null;
+    
+    const count = parseInt(countStr, 10);
+    let json = "";
+    for (let i = 0; i < count; i++) {
+      json += store.getProperty(`segment_tache_${i}`) || "";
+    }
+    
+    try {
+      return JSON.parse(json);
+    } catch (e) {
+      console.error("État corrompu détruit.", e);
+      this.supprimerEtat();
+      return null;
+    }
+  },
+
+  supprimerEtat() {
+    const store = this.getStore();
+    const countStr = store.getProperty("nombre_segments_tache");
+    if (countStr) {
+      const count = parseInt(countStr, 10);
+      for (let i = 0; i < count; i++) {
+        store.deleteProperty(`segment_tache_${i}`);
+      }
+      store.deleteProperty("nombre_segments_tache");
+    }
+  },
+
+  /**
+   * Nettoie les déclencheurs orphelins liés à l'arrière-plan.
+   */
+  nettoyerTriggers() {
+    const triggers = ScriptApp.getProjectTriggers();
+    for (const t of triggers) {
+      if (t.getHandlerFunction() === "traiterTacheArriereplan") {
+        try {
+          ScriptApp.deleteTrigger(t);
+        } catch (e) {
+          console.warn("Échec suppression trigger : " + e.message);
+        }
+      }
+    }
+  },
+
+  programmerArriereplan() {
+    this.nettoyerTriggers();
+    try {
+      ScriptApp.newTrigger("traiterTacheArriereplan")
+        .timeBased()
+        .after(60 * 1000)
+        .create();
+    } catch (e) {
+      console.error("Erreur fatale planification trigger : " + e.message);
+    }
+  }
+};
+
+```
+
+#### 3. `MoteurDuplication.gs`
+
+*Optimisation de l'algorithme BFS à l'aide d'un pointeur linéaire (évite l'utilisation destructrice et lourde de `.shift()`), isolation des logiques d'exclusion et gestion résiliente des quotas.*
+
+```javascript
+/**
+ * ============================================================================
+ * MODULE 3 : MOTEUR ALGORITHMIQUE DE PARCOURS ET DUPLICATION
+ * ============================================================================
+ */
+const MoteurDuplication = {
+
+  /**
+   * Exécute les retentatives automatiques sur les appels de services avancés.
+   */
+  avecRetentative(action, maxTentatives = 3) {
+    for (let tentative = 1; tentative <= maxTentatives; tentative++) {
+      try {
+        return action();
+      } catch (e) {
+        if (tentative >= maxTentatives) throw e;
+        const delaiMs = Math.pow(2, tentative) * 1000 + Math.round(Math.random() * 500);
+        Utilities.sleep(delaiMs);
+      }
+    }
+  },
+
+  estIdValide(id) {
+    return typeof id === "string" && id.length > 0 && CONFIG.REGEX_VALIDATION_ID.test(id);
+  },
+
+  /**
+   * Analyse prédictive de taille de l'arborescence (Récursion sécurisée par seuil).
+   */
+  compterContenuDossier(idDossier, statistiques, profondeur) {
+    if ((statistiques.dossiers + statistiques.fichiers) > CONFIG.SEUIL_LIMITE_APERCU || statistiques.limiteAtteinte) {
+      statistiques.limiteAtteinte = true;
+      return;
+    }
+    if (profondeur > statistiques.profondeur) statistiques.profondeur = profondeur;
+
+    let token = null;
+    const sousDossiers = [];
+
+    do {
+      const reponse = this.avecRetentative(() => Drive.Files.list({
+        q: `'${idDossier}' in parents and trashed = false`,
+        fields: "nextPageToken, files(id, mimeType)",
+        pageSize: 1000,
+        pageToken: token,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true
+      }));
+
+      const files = reponse.files || [];
+      for (const file of files) {
+        if (file.mimeType === CONFIG.MIME_DOSSIER) {
+          statistiques.dossiers++;
+          sousDossiers.push(file.id);
+        } else if (file.mimeType !== CONFIG.MIME_RACCOURCI) {
+          statistiques.fichiers++;
+        }
+      }
+      if ((statistiques.dossiers + statistiques.fichiers) > CONFIG.SEUIL_LIMITE_APERCU) {
+        statistiques.limiteAtteinte = true;
+      }
+      token = reponse.nextPageToken;
+    } while (token && !statistiques.limiteAtteinte);
+
+    for (const idSub of sousDossiers) {
+      if (statistiques.limiteAtteinte) break;
+      this.compterContenuDossier(idSub, statistiques, profondeur + 1);
+    }
+  },
+
+  /**
+   * Algorithme BFS optimisé avec pointeur d'index (Complexité temporelle linéaire O(N)).
+   * @param {DuplicationTask} tache
+   * @param {number} heureDebut - Timestamp de départ.
+   * @param {boolean} estArriereplan
+   * @return {{termine: boolean, tache: DuplicationTask, statistiques: TaskStats}}
+   */
+  executer(tache, heureDebut, estArriereplan = false) {
+    const queue = tache.fileAttente;
+    let index = tache.indexFile || 0; // Utilisation d'un pointeur au lieu de .shift()
+    const dureeMax = estArriereplan ? CONFIG.DUREE_MAX_MS_ARRPLAN : CONFIG.DUREE_MAX_MS_UI;
+
+    // Compilation initiale des règles de filtrage
+    const filtres = (tache.exclusions || []).map(pattern => {
+      if (tache.utiliserRegex) {
+        try { return new RegExp(pattern, "i"); } catch(e) { return null; }
+      }
+      return pattern.toLowerCase().trim();
+    }).filter(Boolean);
+
+    const estExclu = (nom) => {
+      if (filtres.length === 0) return false;
+      return filtres.some(f => f instanceof RegExp ? f.test(nom) : nom.toLowerCase().trim() === f);
+    };
+
+    const collecterErreur = (msg) => {
+      console.error("Échec Moteur: " + msg);
+      if (tache.statistiques.erreurs.length < CONFIG.MAX_ERREURS_STOCKEES) {
+        tache.statistiques.erreurs.push(msg.length > 100 ? `${msg.substring(0, 97)}...` : msg);
+      }
+    };
+
+    while (index < queue.length) {
+      // Vérification stricte du timeout GAS
+      if ((new Date().getTime() - heureDebut) > dureeMax) {
+        tache.indexFile = index; // On garde en mémoire la position du pointeur
+        tache.fileAttente = queue;
+        return { termine: false, tache };
+      }
+
+      const [idSourceActuel, idDestActuel] = queue[index];
+      index++; // On avance dans la file
+      let token = null;
+
+      do {
+        try {
+          const reponse = this.avecRetentative(() => Drive.Files.list({
+            q: `'${idSourceActuel}' in parents and trashed = false`,
+            fields: "nextPageToken, files(id, name, mimeType, description, folderColorRgb)",
+            pageSize: 1000,
+            pageToken: token,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true
+          }));
+
+          const enfants = reponse.files || [];
+          for (const enfant of enfants) {
+            if (enfant.mimeType === CONFIG.MIME_DOSSIER) {
+              if (estExclu(enfant.name)) {
+                tache.statistiques.ignores++;
+                continue;
+              }
+              try {
+                const meta = { name: enfant.name, mimeType: CONFIG.MIME_DOSSIER, parents: [idDestActuel] };
+                if (enfant.description) meta.description = enfant.description;
+                if (enfant.folderColorRgb) meta.folderColorRgb = enfant.folderColorRgb;
+
+                const nouveauDossier = this.avecRetentative(() => Drive.Files.create(meta, null, { supportsAllDrives: true }));
+                if (tache.conserverDroits) this.synchroniserDroits(enfant.id, nouveauDossier.id);
+
+                tache.statistiques.dossiers++;
+                queue.push([enfant.id, nouveauDossier.id]);
+              } catch (errDossier) {
+                collecterErreur(`Dossier "${enfant.name}": ${errDossier.message}`);
+              }
+
+            } else if (enfant.mimeType !== CONFIG.MIME_RACCOURCI && tache.copierFichiers) {
+              try {
+                const metaFichier = { parents: [idDestActuel], name: enfant.name };
+                if (enfant.description) metaFichier.description = enfant.description;
+
+                const nouveauFichier = this.avecRetentative(() => Drive.Files.copy(metaFichier, enfant.id, { supportsAllDrives: true }));
+                if (tache.conserverDroits) this.synchroniserDroits(enfant.id, nouveauFichier.id);
+
+                tache.statistiques.fichiers++;
+              } catch (errFichier) {
+                collecterErreur(`Fichier "${enfant.name}": ${errFichier.message}`);
+              }
+            }
+          }
+          token = reponse.nextPageToken;
+        } catch (e) {
+          collecterErreur("Erreur critique d'accès au dossier parent: " + e.message);
+          break;
+        }
+      } while (token);
+    }
+
+    tache.indexFile = index;
+    return { termine: true, statistiques: tache.statistiques };
+  },
+
+  synchroniserDroits(idSource, idDest) {
+    try {
+      const liste = this.avecRetentative(() => Drive.Permissions.list(idSource, {
+        supportsAllDrives: true,
+        fields: "permissions(emailAddress, role, type, deleted)"
+      }));
+      const permissions = liste.permissions || [];
+      
+      permissions.forEach(p => {
+        if (p.deleted || !p.emailAddress || p.role === 'owner') return;
+        try {
+          this.avecRetentative(() => Drive.Permissions.create({
+            role: p.role,
+            type: p.type,
+            emailAddress: p.emailAddress
+          }, idDest, { supportsAllDrives: true, sendNotificationEmail: false }));
+        } catch (err) {
+          console.warn(`ACL non synchronisée pour ${p.emailAddress}: ${err.message}`);
+        }
+      });
+    } catch (e) {
+      console.warn(`Échec de lecture des ACL source: ${e.message}`);
+    }
+  }
+};
+
+```
+
+#### 4. `Interface.gs`
+
+*Génération découplée des interfaces UI CardService, routage de l'Add-on et mise en forme des modèles de courriels.*
+
+```javascript
+/**
+ * ============================================================================
+ * MODULE 4 : INTERFACE GRAPHIQUE (CARD SERVICE) ET COMMUNICATIONS
+ * ============================================================================
+ */
+
+function onDriveItemsSelected(e) {
+  const elements = e?.drive?.selectedItems;
+  const carte = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader()
+      .setTitle(t('TITLE'))
+      .setSubtitle(t('SUBTITLE'))
+      .setImageUrl(CONFIG.ICONES.LOGO)
+      .setImageStyle(CardService.ImageStyle.CIRCLE));
+
+  if (!elements || elements.length === 0) {
+    carte.addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph()
+      .setText(`<font color="${CONFIG.COULEURS.SUR_SURFACE_VARIANTE}">${t('SELECT_FOLDER_PROMPT')}</font>`)));
+    carte.addSection(construirePiedDePage());
+    return carte.build();
+  }
+
+  const item = elements[0];
+  if (item.mimeType !== CONFIG.MIME_DOSSIER) {
+    carte.addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph()
+      .setText(`<font color="${CONFIG.COULEURS.AVERTISSEMENT}"><b>${t('WARNING')}</b></font><br>${t('NOT_A_FOLDER')}`)));
+    carte.addSection(construirePiedDePage());
+    return carte.build();
+  }
+
+  // Source Section
+  carte.addSection(CardService.newCardSection().addWidget(CardService.newDecoratedText()
+    .setTopLabel(t('SOURCE_FOLDER')).setText(item.title).setWrapText(true)
+    .setButton(CardService.newTextButton().setText(t('PREVIEW_BTN'))
+      .setOnClickAction(CardService.newAction().setFunctionName("apercuDossier")
+        .setParameters({ idDossier: item.id, nomDossier: item.title })))));
+
+  // Setup Section
+  carte.addSection(CardService.newCardSection()
+    .setHeader(t('CONFIG_HEADER'))
+    .addWidget(CardService.newTextInput().setFieldName("nom_copie").setTitle(t('COPY_NAME_LABEL')).setValue(t('COPY_OF', item.title)))
+    .addWidget(CardService.newSelectionInput().setType(CardService.SelectionInputType.RADIO_BUTTON).setTitle(t('DESTINATION_TITLE')).setFieldName("emplacement_dest")
+      .addItem(t('DEST_SAME'), "meme", true).addItem(t('DEST_ROOT'), "racine", false).addItem(t('DEST_CUSTOM'), "personnalise", false))
+    .addWidget(CardService.newTextInput().setFieldName("id_dest_personnalise").setTitle(t('DEST_CUSTOM_INT')).setHint(t('DEST_CUSTOM_HINT')))
+    .addWidget(CardService.newSelectionInput().setType(CardService.SelectionInputType.CHECK_BOX).setFieldName("copier_fichiers").addItem(t('COPY_FILES_OPT'), "oui", false))
+    .addWidget(CardService.newSelectionInput().setType(CardService.SelectionInputType.CHECK_BOX).setFieldName("arriere_plan").addItem(t('RUN_BG_OPT'), "oui", true))
+    .addWidget(CardService.newSelectionInput().setType(CardService.SelectionInputType.CHECK_BOX).setFieldName("conserver_droits").addItem(t('SYNC_PERM_OPT'), "oui", false)));
+
+  // Advanced section
+  carte.addSection(CardService.newCardSection().setHeader(t('ADVANCED_OPTS')).setCollapsible(true).setNumUncollapsibleWidgets(0)
+    .addWidget(CardService.newTextInput().setFieldName("exclusions").setTitle(t('EXCLUSIONS_LABEL')).setHint(t('EXCLUSIONS_HINT')))
+    .addWidget(CardService.newSelectionInput().setType(CardService.SelectionInputType.CHECK_BOX).setFieldName("utiliser_regex").addItem(t('USE_REGEX_OPT'), "oui", false)));
+
+  // Actions
+  const sectionActions = CardService.newCardSection().addWidget(CardService.newTextButton()
+    .setText(t('START_BTN')).setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+    .setOnClickAction(CardService.newAction().setFunctionName("lancerDuplication").setParameters({ idDossier: item.id, nomDossier: item.title })));
+
+  if (PersistanceManager.chargerEtat()) {
+    sectionActions.addWidget(CardService.newDivider());
+    sectionActions.addWidget(CardService.newTextButton().setText(t('RESUME_BTN')).setOnClickAction(CardService.newAction().setFunctionName("reprendreDuplication")));
+  }
+
+  carte.addSection(sectionActions);
+  carte.addSection(construireSectionHistorique());
+  carte.addSection(construirePiedDePage());
+  return carte.build();
+}
+
+function apercuDossier(e) {
+  const { idDossier, nomDossier } = e.parameters;
+  if (!MoteurDuplication.estIdValide(idDossier)) {
+    return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().pushCard(construireCarteErreur(t('INVALID_FOLDER_ID')))).build();
+  }
+
+  try {
+    const stats = { dossiers: 0, fichiers: 0, profondeur: 0, limiteAtteinte: false };
+    MoteurDuplication.compterContenuDossier(idDossier, stats, 0);
+
+    const estVolumineux = stats.dossiers > 50 || stats.fichiers > 200 || stats.limiteAtteinte;
+    let analyse = estVolumineux 
+      ? `<font color="${CONFIG.COULEURS.AVERTISSEMENT}"><b>${t('LARGE_TREE')}</b></font><br>${t('MULTIPLE_PASSES')}`
+      : `<font color="${CONFIG.COULEURS.SUCCES}">${t('REASONABLE_SIZE')}</font>`;
+
+    if (stats.limiteAtteinte) {
+      analyse += `<br><br><font color="${CONFIG.COULEURS.SUR_SURFACE_VARIANTE}"><i>${t('LIMITED_PREVIEW', CONFIG.SEUIL_LIMITE_APERCU.toString())}</i></font>`;
+    }
+
+    const carte = CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle(t('PREVIEW_BTN')).setSubtitle(nomDossier).setImageUrl(CONFIG.ICONES.LOGO).setImageStyle(CardService.ImageStyle.CIRCLE))
+      .addSection(CardService.newCardSection()
+        .addWidget(CardService.newDecoratedText().setTopLabel(t('SUBFOLDERS')).setText(`${stats.dossiers}${stats.limiteAtteinte ? "+" : ""}`))
+        .addWidget(CardService.newDecoratedText().setTopLabel(t('FILES')).setText(`${stats.fichiers}${stats.limiteAtteinte ? "+" : ""}`))
+        .addWidget(CardService.newDecoratedText().setTopLabel(t('DEPTH')).setText(t('LEVELS', stats.profondeur.toString())))
+        .addWidget(CardService.newDivider())
+        .addWidget(CardService.newTextParagraph().setText(analyse))
+        .addWidget(CardService.newTextButton().setText(t('BACK_BTN')).setOnClickAction(CardService.newAction().setFunctionName("retourArriere"))))
+      .addSection(construirePiedDePage())
+      .build();
+
+    return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().pushCard(carte)).build();
+  } catch (err) {
+    return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().pushCard(construireCarteErreur(t('UNABLE_TO_READ_FOLDER', err.message)))).build();
+  }
+}
+
+function retourArriere() {
+  return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().popCard()).build();
+}
+
+function lancerDuplication(e) {
+  PersistanceManager.supprimerEtat();
+  const { idDossier, nomDossier } = e.parameters;
+  const inputs = e.formInputs || {};
+
+  const getVal = (field, fallback = "") => (inputs[field] && inputs[field][0]) ? inputs[field][0] : fallback;
+  const isChecked = (field) => inputs[field] && inputs[field][0] === "oui";
+
+  const nomDestination = getVal("nom_copie", t('COPY_OF', nomDossier)).trim();
+  const copierFichiers = isChecked("copier_fichiers");
+  const executerArriereplan = isChecked("arriere_plan");
+  const conserverDroits = isChecked("conserver_droits");
+  const emplacementDest = getVal("emplacement_dest", "meme");
+  const idDestPersonnalise = getVal("id_dest_personnalise").trim();
+  const exclusionsBrutes = getVal("exclusions");
+  const utiliserRegex = isChecked("utiliser_regex");
+  const exclusions = exclusionsBrutes.split(",").map(s => s.trim()).filter(Boolean);
+
+  if (!nomDestination) return construireCarteErreur(t('EMPTY_COPY_NAME'));
+  if (!MoteurDuplication.estIdValide(idDossier)) return construireCarteErreur(t('INVALID_SOURCE_ID'));
+
+  try {
+    let idDossierParent = 'root';
+    let dossierSourceInfo;
+
+    try {
+      dossierSourceInfo = MoteurDuplication.avecRetentative(() => Drive.Files.get(idDossier, { fields: 'parents', supportsAllDrives: true }));
+    } catch (err) {
+      return construireCarteErreur(t('INVALID_SOURCE_ID'));
+    }
+
+    if (emplacementDest === "personnalise" && idDestPersonnalise) {
+      if (!MoteurDuplication.estIdValide(idDestPersonnalise)) return construireCarteErreur(t('INVALID_DEST_CHARS'));
+      try {
+        MoteurDuplication.avecRetentative(() => Drive.Files.get(idDestPersonnalise, { fields: 'id', supportsAllDrives: true }));
+        idDossierParent = idDestPersonnalise;
+      } catch (err) {
+        return construireCarteErreur(t('INVALID_DEST_ID'));
+      }
+    } else if (emplacementDest === "meme") {
+      idDossierParent = (dossierSourceInfo.parents && dossierSourceInfo.parents.length > 0) ? dossierSourceInfo.parents[0] : 'root';
+    }
+
+    const dossierDestination = MoteurDuplication.avecRetentative(() => Drive.Files.create({
+      name: nomDestination,
+      mimeType: CONFIG.MIME_DOSSIER,
+      parents: [idDossierParent]
+    }, null, { supportsAllDrives: true }));
+
+    if (conserverDroits) MoteurDuplication.synchroniserDroits(idDossier, dossierDestination.id);
+
+    /** @type {DuplicationTask} */
+    const tache = {
+      idDossierSource: idDossier,
+      nomSource: nomDossier,
+      idDossierDest: dossierDestination.id,
+      nomDestination,
+      copierFichiers,
+      executerArriereplan,
+      conserverDroits,
+      emailUtilisateur: Session.getEffectiveUser().getEmail(),
+      exclusions,
+      utiliserRegex,
+      statistiques: { dossiers: 0, fichiers: 0, erreurs: [], ignores: 0 },
+      fileAttente: [[idDossier, dossierDestination.id]],
+      indexFile: 0
+    };
+
+    const resultat = MoteurDuplication.executer(tache, new Date().getTime());
+    if (resultat.termine) {
+      PersistanceManager.supprimerEtat();
+      sauvegarderHistorique(nomDossier, nomDestination, dossierDestination.id, resultat.statistiques);
+      notifierParEmail(tache.emailUtilisateur, nomDestination, dossierDestination.id, resultat.statistiques, true);
+      return construireCarteResultat(nomDestination, dossierDestination.id, resultat.statistiques, copierFichiers);
+    } else {
+      PersistanceManager.sauvegarderEtat(resultat.tache);
+      if (executerArriereplan) {
+        PersistanceManager.programmerArriereplan();
+        return construireCarteArriereplan(dossierDestination.id);
+      } else {
+        return construireCarteProgression(resultat.tache);
+      }
+    }
+  } catch (err) {
+    PersistanceManager.supprimerEtat();
+    return construireCarteErreur(err.message);
+  }
+}
+
+function reprendreDuplication() {
+  const tache = PersistanceManager.chargerEtat();
+  if (!tache) return construireCarteErreur(t('NO_DUPLICATION_CORRUPTED'));
+
+  const resultat = MoteurDuplication.executer(tache, new Date().getTime());
+  if (resultat.termine) {
+    PersistanceManager.supprimerEtat();
+    sauvegarderHistorique(tache.nomSource, tache.nomDestination, tache.idDossierDest, resultat.statistiques);
+    notifierParEmail(tache.emailUtilisateur, tache.nomDestination, tache.idDossierDest, resultat.statistiques, true);
+    return construireCarteResultat(tache.nomDestination, tache.idDossierDest, resultat.statistiques, tache.copierFichiers);
+  } else {
+    PersistanceManager.sauvegarderEtat(resultat.tache);
+    if (tache.executerArriereplan) {
+      PersistanceManager.programmerArriereplan();
+      return construireCarteArriereplan(tache.idDossierDest);
+    }
+    return construireCarteProgression(resultat.tache);
+  }
+}
+
+function traiterTacheArriereplan() {
+  PersistanceManager.nettoyerTriggers();
+  const tache = PersistanceManager.chargerEtat();
+  if (!tache) return;
+
+  try {
+    const resultat = MoteurDuplication.executer(tache, new Date().getTime(), true);
+    if (resultat.termine) {
+      PersistanceManager.supprimerEtat();
+      sauvegarderHistorique(tache.nomSource, tache.nomDestination, tache.idDossierDest, resultat.statistiques);
+      notifierParEmail(tache.emailUtilisateur, tache.nomDestination, tache.idDossierDest, resultat.statistiques, true);
+    } else {
+      PersistanceManager.sauvegarderEtat(resultat.tache);
+      PersistanceManager.programmerArriereplan();
+    }
+  } catch (e) {
+    notifierParEmail(tache.emailUtilisateur, tache.nomDestination, tache.idDossierDest, tache.statistiques, false, e.message);
+  }
+}
+
+// UI Elements Construction
+function construirePiedDePage() {
+  return CardService.newCardSection().setCollapsible(false)
+    .addWidget(CardService.newTextParagraph().setText(`<font color="${CONFIG.COULEURS.SUR_SURFACE_VARIANTE}"><i>${CONFIG.VERSION} · ${CONFIG.AUTEUR}</i></font>`));
+}
+
+function construireCarteArriereplan(idDossierDest) {
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle(t('BG_PROCESSING_TITLE')).setSubtitle(t('BG_PROCESSING_SUB')).setImageUrl(CONFIG.ICONES.LOGO).setImageStyle(CardService.ImageStyle.CIRCLE))
+    .addSection(CardService.newCardSection()
+      .addWidget(CardService.newTextParagraph().setText(`<font color="${CONFIG.COULEURS.PRIMAIRE}"><b>${t('BG_PROCESSING_MSG1')}</b></font><br><br>${t('BG_PROCESSING_MSG2')}`))
+      .addWidget(CardService.newDivider())
+      .addWidget(CardService.newTextButton().setText(t('OPEN_FOLDER_BUILD')).setOpenLink(CardService.newOpenLink().setUrl(`https://drive.google.com/drive/folders/${idDossierDest}`))))
+    .addSection(construirePiedDePage()).build();
+}
+
+function construireCarteProgression(tache) {
+  const reste = tache.fileAttente.length - (tache.indexFile || 0);
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle(t('PASS_INCOMPLETE_TITLE')).setSubtitle(t('PASS_INCOMPLETE_SUB')).setImageUrl(CONFIG.ICONES.LOGO).setImageStyle(CardService.ImageStyle.CIRCLE))
+    .addSection(CardService.newCardSection()
+      .addWidget(CardService.newDecoratedText().setTopLabel(t('FOLDERS_CREATED')).setText(`${tache.statistiques.dossiers}`))
+      .addWidget(CardService.newDecoratedText().setTopLabel(t('FILES_COPIED')).setText(`${tache.statistiques.fichiers || 0}`))
+      .addWidget(CardService.newDecoratedText().setTopLabel(t('REMAINING_TO_PROCESS')).setText(t('FOLDERS_IN_QUEUE', reste.toString())))
+      .addWidget(CardService.newDivider())
+      .addWidget(CardService.newTextParagraph().setText(`<font color="${CONFIG.COULEURS.AVERTISSEMENT}">${t('LARGE_TREE_CONTINUE')}</font>`))
+      .addWidget(CardService.newTextButton().setText(t('CONTINUE_BTN')).setTextButtonStyle(CardService.TextButtonStyle.FILLED).setOnClickAction(CardService.newAction().setFunctionName("reprendreDuplication"))))
+    .addSection(construirePiedDePage()).build();
+}
+
+function construireCarteResultat(nomDest, idDest, statistiques, copierFichiers) {
+  const section = CardService.newCardSection()
+    .addWidget(CardService.newDecoratedText().setTopLabel(t('FOLDER_CREATED')).setText(nomDest).setWrapText(true))
+    .addWidget(CardService.newDecoratedText().setTopLabel(t('SUBFOLDERS_CREATED')).setText(`${statistiques.dossiers}`));
+    
+  if (copierFichiers) section.addWidget(CardService.newDecoratedText().setTopLabel(t('FILES_COPIED')).setText(`${statistiques.fichiers || 0}`));
+  if (statistiques.ignores > 0) section.addWidget(CardService.newDecoratedText().setTopLabel(t('FOLDERS_IGNORED')).setText(`${statistiques.ignores}`));
+  
+  if (statistiques.erreurs && statistiques.erreurs.length > 0) {
+    let errTxt = `<font color="${CONFIG.COULEURS.ERREUR}"><b>${t('ERRORS_ENCOUNTERED', statistiques.erreurs.length.toString())}</b></font><br>`;
+    statistiques.erreurs.slice(0, 5).forEach(err => { errTxt += `• <i>${err}</i><br>`; });
+    if (statistiques.erreurs.length > 5) errTxt += `<i>${t('AND_OTHERS', (statistiques.erreurs.length - 5).toString())}</i>`;
+    section.addWidget(CardService.newTextParagraph().setText(errTxt));
+  }
+
+  section.addWidget(CardService.newDivider());
+  section.addWidget(CardService.newTextButton().setText(t('OPEN_CREATED_FOLDER')).setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+    .setOpenLink(CardService.newOpenLink().setUrl(`https://drive.google.com/drive/folders/${idDest}`)));
+
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle(t('DUPLICATION_FINISHED_TITLE')).setSubtitle(t('FOLDERS_CREATED_SUCCESS', statistiques.dossiers.toString())).setImageUrl(CONFIG.ICONES.LOGO).setImageStyle(CardService.ImageStyle.CIRCLE))
+    .addSection(section).addSection(construirePiedDePage()).build();
+}
+
+function construireCarteErreur(message) {
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle(t('ERROR_TITLE')).setSubtitle(t('PROBLEM_OCCURRED')).setImageUrl(CONFIG.ICONES.LOGO).setImageStyle(CardService.ImageStyle.CIRCLE))
+    .addSection(CardService.newCardSection()
+      .addWidget(CardService.newTextParagraph().setText(`<font color="${CONFIG.COULEURS.ERREUR}">${message}</font>`))
+      .addWidget(CardService.newDivider())
+      .addWidget(CardService.newTextButton().setText(t('BACK_BTN')).setOnClickAction(CardService.newAction().setFunctionName("retourArriere"))))
+    .addSection(construirePiedDePage()).build();
+}
+
+function construireSectionHistorique() {
+  const section = CardService.newCardSection().setHeader(t('HISTORY_HEADER')).setCollapsible(true).setNumUncollapsibleWidgets(0);
+  const historique = chargerHistoriqueRaw();
+
+  if (historique.length === 0) {
+    return section.addWidget(CardService.newTextParagraph().setText(`<font color="${CONFIG.COULEURS.SUR_SURFACE_VARIANTE}">${t('HISTORY_EMPTY')}</font>`));
+  }
+
+  historique.slice(0, CONFIG.MAX_ENTREES_HISTORIQUE).forEach(e => {
+    section.addWidget(CardService.newDecoratedText()
+      .setTopLabel(e.date).setText(`${e.nomSource} → ${e.nomDestination}`)
+      .setBottomLabel(`${e.dossiers} ${t('FOLDERS_CREATED').toLowerCase()}, ${e.fichiers} ${t('FILES_COPIED').toLowerCase()}`).setWrapText(true)
+      .setButton(CardService.newImageButton().setIconUrl(CONFIG.ICONES.OUVRIR_NOUVEAU).setAltText(t('HISTORY_OPEN_ALT')).setOpenLink(CardService.newOpenLink().setUrl(`https://drive.google.com/drive/folders/${e.idDest}`))));
+  });
+
+  section.addWidget(CardService.newDivider());
+  section.addWidget(CardService.newTextButton().setText(t('CLEAR_HISTORY_BTN')).setOnClickAction(CardService.newAction().setFunctionName("effacerHistorique")));
+  return section;
+}
+
+function sauvegarderHistorique(nomSource, nomDestination, idDest, statistiques) {
+  const historique = chargerHistoriqueRaw();
+  historique.unshift({
+    date: new Date().toLocaleString(Session.getActiveUserLocale() || "en-US"),
+    nomSource, nomDestination, idDest, dossiers: statistiques.dossiers, fichiers: statistiques.fichiers || 0
+  });
+  PersistanceManager.getStore().setProperty("historique", JSON.stringify(historique.slice(0, CONFIG.MAX_ENTREES_HISTORIQUE)));
+}
+
+function chargerHistoriqueRaw() {
+  const brut = PersistanceManager.getStore().getProperty("historique");
+  if (!brut) return [];
+  try { return JSON.parse(brut); } catch (e) { return []; }
+}
+
+function effacerHistorique() {
+  PersistanceManager.getStore().deleteProperty("historique");
+  return CardService.newActionResponseBuilder().setNotification(CardService.newNotification().setText(t('HISTORY_CLEARED'))).setStateChanged(true).build();
+}
+
+// Mail Notification Engine
+function notifierParEmail(email, nomDest, idDest, statistiques, estSucces, detailErreur = "") {
+  if (!email) return;
+  const url = `https://drive.google.com/drive/folders/${idDest}`;
+  const subject = estSucces ? t('EMAIL_SUCCESS_SUBJECT', nomDest) : t('EMAIL_FAILED_SUBJECT', nomDest);
+  
+  let corpsTexte = `${t('EMAIL_SUCCESS_HELLO')},\n\n`;
+  if (estSucces) {
+    corpsTexte += `${t('EMAIL_SUCCESS_BODY_1')}\n\n${t('EMAIL_SUCCESS_FOLDER', nomDest)}\n${t('FOLDERS_CREATED')} : ${statistiques.dossiers}\n${t('FILES_COPIED')} : ${statistiques.fichiers || 0}\n\n${url}`;
+  } else {
+    corpsTexte += `${t('EMAIL_FAILED_BODY_1')}\n\n${detailErreur}\n\n${t('EMAIL_FAILED_BODY_2')}`;
+  }
+
+  // Génération simplifiée et robuste du HTML adaptatif (Material Blue / Red Theme)
+  const codeCouleur = estSucces ? "#0b57d0" : "#b3261e";
+  const iconeHeader = estSucces ? "&#9989;" : "&#9888;";
+  const titreHeader = estSucces ? t('DUPLICATION_FINISHED_TITLE') : t('EMAIL_FAILED_TITLE');
+  const sousTitreHeader = estSucces ? t('EMAIL_SUCCESS_SUBTITLE') : nomDest;
+
+  const htmlBody = `
+  <!DOCTYPE html>
+  <html>
+  <body style="margin:0;padding:0;background-color:#f3f6fc;font-family:Roboto,Arial,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f3f6fc;padding:24px 0;">
+      <tr><td align="center">
+        <table width="560" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.12);">
+          <tr>
+            <td style="background-color:${codeCouleur};padding:32px 24px;text-align:center;color:#FFFFFF;">
+              <div style="font-size:28px;">${iconeHeader}</div>
+              <h1 style="margin:8px 0 0;font-size:22px;font-weight:500;">${titreHeader}</h1>
+              <p style="margin:4px 0 0;font-size:14px;color:rgba(255,255,255,0.85);">${sousTitreHeader}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px;color:#202124;font-size:14px;line-height:1.6;">
+              <p>${t('EMAIL_SUCCESS_HELLO')},</p>
+              <p>${estSucces ? t('EMAIL_SUCCESS_BODY_2') : t('EMAIL_FAILED_BODY_1_HTML')}</p>
+              
+              ${estSucces ? `
+              <table width="100%" style="background-color:#f3f6fc;border-radius:12px;margin:20px 0;padding:16px;">
+                <tr><td><b>${t('FOLDER_CREATED')} :</b> ${nomDest}</td></tr>
+                <tr><td><b>${t('SUBFOLDERS')} :</b> ${statistiques.dossiers}</td></tr>
+                <tr><td><b>${t('FILES')} :</b> ${statistiques.fichiers || 0}</td></tr>
+              </table>
+              <div style="text-align:center;margin:24px 0;">
+                <a href="${url}" style="padding:12px 32px;background-color:#0b57d0;color:#FFFFFF;text-decoration:none;border-radius:100px;font-weight:500;">${t('EMAIL_SUCCESS_OPEN_BTN')}</a>
+              </div>
+              ` : `
+              <div style="background-color:#FEF7F6;border:1px solid #F5C6CB;border-radius:12px;padding:16px;color:#b3261e;font-family:monospace;margin:20px 0;">
+                <b>${t('EMAIL_FAILED_DETAIL')} :</b><br>${detailErreur}
+              </div>
+              <table width="100%" style="background-color:#f3f6fc;border-radius:12px;padding:16px;margin:20px 0;">
+                <tr><td><b>${t('EMAIL_FAILED_ACTION_TITLE')} :</b><br>${t('EMAIL_FAILED_ACTION_DESC')}</td></tr>
+              </table>
+              `}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px;background-color:#f3f6fc;text-align:center;font-size:12px;color:#9AA0A6;border-top:1px solid #E8EAED;">
+              ${CONFIG.VERSION} · ${CONFIG.AUTEUR}<br>${t('EMAIL_FOOTER_DESC')}
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+  </html>`;
+
+  try {
+    MailApp.sendEmail({ to: email, subject, body: corpsTexte, htmlBody: htmlBody });
+  } catch (e) {
+    console.error("Échec d'envoi de la notification courriel: " + e.message);
+  }
+}
+
+function autoriserMaintenant() {
+  const racine = Drive.Files.get('root', { fields: 'name' });
+  console.log("Autorisation validée sur le Drive racine : " + racine.name);
+}
+
+```
+
+---
+
+### ✨ Améliorations majeures apportées par ce refactoring
+
+1. **Complexité algorithmique réduite de O(N²) à O(N)** : En éliminant l'utilisation systématique de `fileAttente.shift()` (qui force JavaScript à réindexer l'ensemble des éléments restants en mémoire à chaque dossier traité), le moteur utilise dorénavant un pointeur de lecture linéaire dynamique (`indexFile`). Sur des structures de plusieurs milliers de dossiers, le gain de temps CPU au sein de la limite des 6 minutes imposée par Google Apps Script est substantiel.
+2. **Encapsulation et modularité** : Le code n'est plus un bloc monolithique. L'UI (`Interface.gs`), les configurations (`Configuration.gs`), la base de données temporaire (`Persistance.gs`) et l'algorithme pur (`MoteurDuplication.gs`) sont isolés.
+3. **Robustesse globale** : Suppression des variables globales libres qui polluaient le contexte global d'exécution de l'Add-on. L'accolade manquante sur la synchronisation des permissions a été corrigée. Les typages structurels via JSDoc sécurisent l'évolution de l'outil.
